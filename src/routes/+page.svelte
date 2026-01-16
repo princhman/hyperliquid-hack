@@ -1,4 +1,7 @@
 <script lang="ts">
+    import { Button } from "$lib/components/ui/button";
+    import * as Card from "$lib/components/ui/card";
+    import { goto } from "$app/navigation";
     import {
         auth,
         isConnected,
@@ -131,6 +134,9 @@
                     status: "ACTIVE",
                 });
             });
+
+            // Navigate to lobby after successful approval
+            await goto("/lobby");
         } catch (err) {
             errorMessage =
                 err instanceof Error ? err.message : "Approval failed";
@@ -148,211 +154,135 @@
     function shortenAddress(address: string): string {
         return `${address.slice(0, 6)}...${address.slice(-4)}`;
     }
+
+    function goToLobby() {
+        goto("/lobby");
+    }
 </script>
 
-<div
-    class="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-4"
->
-    <div class="max-w-md w-full space-y-8">
-        <!-- Header -->
-        <div class="text-center">
-            <h1 class="text-4xl font-bold text-white mb-2">Hyperliquid Hack</h1>
-            <p class="text-gray-400">Competitive pair-trading game</p>
+<div class="min-h-screen bg-background flex flex-col">
+    <header class="border-b">
+        <div
+            class="container mx-auto px-4 py-4 flex items-center justify-between"
+        >
+            <h1 class="text-2xl font-bold">
+                <a href="/">Pear Pool</a>
+            </h1>
+            <nav class="flex gap-4">
+                <Button variant="ghost" href="/how-it-works"
+                    >How it Works</Button
+                >
+            </nav>
+        </div>
+    </header>
+
+    <main
+        class="flex-1 container mx-auto px-4 py-12 flex flex-col lg:flex-row items-center gap-12"
+    >
+        <div class="flex-1 space-y-6">
+            <h2 class="text-4xl lg:text-5xl font-bold tracking-tight">
+                Compete. Trade. Win.
+            </h2>
+            <p class="text-xl text-muted-foreground max-w-lg">
+                Join the ultimate trading duel. Start with equal capital, trade
+                real markets via Hyperliquid, and climb the leaderboard to win
+                the prize pool.
+            </p>
+            <div class="flex justify-start">
+                <Button size="lg" variant="outline" href="/learn-more"
+                    >Learn More</Button
+                >
+            </div>
         </div>
 
-        <!-- Progress Steps -->
-        <div class="flex justify-center gap-2">
-            {#each ["connect", "authenticate", "agent-wallet", "ready"] as step, i}
-                <div class="flex items-center">
-                    <div
-                        class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium
-              {currentStep === step
-                            ? 'bg-blue-600 text-white'
-                            : [
-                                    'connect',
-                                    'authenticate',
-                                    'agent-wallet',
-                                    'ready',
-                                ].indexOf(currentStep) > i
-                              ? 'bg-green-600 text-white'
-                              : 'bg-gray-700 text-gray-400'}"
-                    >
-                        {#if ["connect", "authenticate", "agent-wallet", "ready"].indexOf(currentStep) > i}
-                            <svg
-                                class="w-4 h-4"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                            >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M5 13l4 4L19 7"
-                                />
-                            </svg>
-                        {:else}
-                            {i + 1}
-                        {/if}
-                    </div>
-                    {#if i < 3}
-                        <div
-                            class="w-8 h-0.5 {[
-                                'connect',
-                                'authenticate',
-                                'agent-wallet',
-                                'ready',
-                            ].indexOf(currentStep) > i
-                                ? 'bg-green-600'
-                                : 'bg-gray-700'}"
-                        ></div>
-                    {/if}
-                </div>
-            {/each}
-        </div>
-
-        <!-- Auth Card -->
-        <div class="bg-gray-800 rounded-xl p-8 shadow-xl">
+        <Card.Root class="w-full max-w-sm">
             {#if currentStep === "ready"}
                 <!-- Ready to trade -->
-                <div class="text-center space-y-4">
-                    <div
-                        class="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto"
-                    >
-                        <svg
-                            class="w-8 h-8 text-green-500"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                        >
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M5 13l4 4L19 7"
-                            />
-                        </svg>
+                <Card.Header>
+                    <Card.Title>Ready to Trade!</Card.Title>
+                    <Card.Description>
+                        Your wallet is connected and approved
+                    </Card.Description>
+                </Card.Header>
+                <Card.Content class="space-y-4">
+                    <div class="text-center space-y-2">
+                        <p class="text-muted-foreground font-mono text-sm">
+                            {$walletAddress
+                                ? shortenAddress($walletAddress)
+                                : ""}
+                        </p>
+                        <p class="text-muted-foreground text-xs">
+                            Agent Wallet: {agentWalletAddress
+                                ? shortenAddress(agentWalletAddress)
+                                : "Active"}
+                        </p>
                     </div>
-                    <h2 class="text-xl font-semibold text-white">
-                        Ready to Trade!
-                    </h2>
-                    <p class="text-gray-400 font-mono text-sm">
-                        {$walletAddress ? shortenAddress($walletAddress) : ""}
-                    </p>
-                    <p class="text-gray-500 text-xs">
-                        Agent Wallet: {agentWalletAddress
-                            ? shortenAddress(agentWalletAddress)
-                            : "Active"}
-                    </p>
-                    <button
+                    <Button class="w-full" onclick={goToLobby}>
+                        Enter Lobby
+                    </Button>
+                    <Button
+                        variant="outline"
+                        class="w-full"
                         onclick={handleDisconnect}
-                        class="w-full py-3 px-4 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
                     >
                         Disconnect
-                    </button>
-                </div>
+                    </Button>
+                </Card.Content>
             {:else if currentStep === "agent-wallet"}
                 <!-- Need to approve agent wallet -->
-                <div class="space-y-4">
-                    <div class="text-center">
+                <Card.Header>
+                    <Card.Title>Approve Agent Wallet</Card.Title>
+                    <Card.Description>
+                        Pear Protocol needs permission to trade on your behalf
+                        via Hyperliquid
+                    </Card.Description>
+                </Card.Header>
+                <Card.Content class="space-y-4">
+                    {#if agentWalletAddress}
                         <div
-                            class="w-12 h-12 bg-yellow-500/20 rounded-full flex items-center justify-center mx-auto mb-4"
+                            class="p-2 bg-muted rounded text-xs font-mono text-center break-all"
                         >
-                            <svg
-                                class="w-6 h-6 text-yellow-500"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                            >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-                                />
-                            </svg>
+                            {agentWalletAddress}
                         </div>
-                        <h2 class="text-xl font-semibold text-white mb-2">
-                            Approve Agent Wallet
-                        </h2>
-                        <p class="text-gray-400 text-sm mb-4">
-                            Pear Protocol needs permission to trade on your
-                            behalf via Hyperliquid.
-                        </p>
-                        {#if agentWalletAddress}
-                            <p
-                                class="text-gray-500 text-xs font-mono bg-gray-900 p-2 rounded"
-                            >
-                                {agentWalletAddress}
-                            </p>
-                        {/if}
-                    </div>
+                    {/if}
 
                     {#if errorMessage}
                         <div
-                            class="bg-red-500/10 border border-red-500/20 rounded-lg p-3"
+                            class="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-md"
                         >
-                            <p class="text-red-400 text-sm">{errorMessage}</p>
+                            {errorMessage}
                         </div>
                     {/if}
 
-                    <button
+                    <Button
+                        class="w-full"
                         onclick={handleApproveAgentWallet}
                         disabled={isLoading}
-                        class="w-full py-3 px-4 bg-yellow-600 hover:bg-yellow-700 disabled:bg-yellow-600/50 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
                     >
-                        {#if isLoading}
-                            <svg
-                                class="animate-spin h-5 w-5"
-                                viewBox="0 0 24 24"
-                            >
-                                <circle
-                                    class="opacity-25"
-                                    cx="12"
-                                    cy="12"
-                                    r="10"
-                                    stroke="currentColor"
-                                    stroke-width="4"
-                                    fill="none"
-                                />
-                                <path
-                                    class="opacity-75"
-                                    fill="currentColor"
-                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                                />
-                            </svg>
-                            Approving...
-                        {:else}
-                            <svg
-                                class="w-5 h-5"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                            >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
-                                />
-                            </svg>
-                            Approve on Hyperliquid
-                        {/if}
-                    </button>
-
-                    <button
+                        {isLoading ? "Approving..." : "Approve on Hyperliquid"}
+                    </Button>
+                    <Button
+                        variant="ghost"
+                        class="w-full"
                         onclick={handleDisconnect}
-                        class="w-full py-2 px-4 text-gray-400 hover:text-white transition-colors text-sm"
                     >
                         Disconnect Wallet
-                    </button>
-                </div>
+                    </Button>
+                </Card.Content>
             {:else if currentStep === "authenticate"}
                 <!-- Connected but not authenticated -->
-                <div class="space-y-4">
+                <Card.Header>
+                    <Card.Title>Sign In</Card.Title>
+                    <Card.Description>
+                        Sign a message to authenticate with Pear Protocol
+                    </Card.Description>
+                </Card.Header>
+                <Card.Content class="space-y-4">
                     <div class="text-center">
-                        <p class="text-gray-400 mb-2">Wallet Connected</p>
-                        <p class="text-white font-mono text-sm">
+                        <p class="text-muted-foreground mb-2">
+                            Wallet Connected
+                        </p>
+                        <p class="font-mono text-sm">
                             {$walletAddress
                                 ? shortenAddress($walletAddress)
                                 : ""}
@@ -361,118 +291,79 @@
 
                     {#if errorMessage}
                         <div
-                            class="bg-red-500/10 border border-red-500/20 rounded-lg p-3"
+                            class="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-md"
                         >
-                            <p class="text-red-400 text-sm">{errorMessage}</p>
+                            {errorMessage}
                         </div>
                     {/if}
 
-                    <button
+                    <Button
+                        class="w-full"
                         onclick={handleLogin}
                         disabled={isLoading}
-                        class="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
                     >
-                        {#if isLoading}
-                            <svg
-                                class="animate-spin h-5 w-5"
-                                viewBox="0 0 24 24"
-                            >
-                                <circle
-                                    class="opacity-25"
-                                    cx="12"
-                                    cy="12"
-                                    r="10"
-                                    stroke="currentColor"
-                                    stroke-width="4"
-                                    fill="none"
-                                />
-                                <path
-                                    class="opacity-75"
-                                    fill="currentColor"
-                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                                />
-                            </svg>
-                            Signing...
-                        {:else}
-                            Sign in with Pear Protocol
-                        {/if}
-                    </button>
-
-                    <button
+                        {isLoading
+                            ? "Signing..."
+                            : "Sign in with Pear Protocol"}
+                    </Button>
+                    <Button
+                        variant="ghost"
+                        class="w-full"
                         onclick={handleDisconnect}
-                        class="w-full py-2 px-4 text-gray-400 hover:text-white transition-colors text-sm"
                     >
                         Disconnect Wallet
-                    </button>
-                </div>
+                    </Button>
+                </Card.Content>
             {:else}
                 <!-- Not connected -->
-                <div class="space-y-4">
-                    <div class="text-center">
-                        <h2 class="text-xl font-semibold text-white mb-2">
-                            Connect Your Wallet
-                        </h2>
-                        <p class="text-gray-400 text-sm">
-                            Connect your wallet to start trading
-                        </p>
-                    </div>
-
+                <Card.Header>
+                    <Card.Title>Connect Your Wallet</Card.Title>
+                    <Card.Description>
+                        Connect your wallet to start trading
+                    </Card.Description>
+                </Card.Header>
+                <Card.Content class="space-y-4">
                     {#if errorMessage}
                         <div
-                            class="bg-red-500/10 border border-red-500/20 rounded-lg p-3"
+                            class="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-md"
                         >
-                            <p class="text-red-400 text-sm">{errorMessage}</p>
+                            {errorMessage}
                         </div>
                     {/if}
 
-                    <button
+                    <Button
+                        class="w-full"
                         onclick={handleConnectWallet}
                         disabled={isLoading}
-                        class="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
                     >
-                        {#if isLoading}
-                            <svg
-                                class="animate-spin h-5 w-5"
-                                viewBox="0 0 24 24"
-                            >
-                                <circle
-                                    class="opacity-25"
-                                    cx="12"
-                                    cy="12"
-                                    r="10"
-                                    stroke="currentColor"
-                                    stroke-width="4"
-                                    fill="none"
-                                />
-                                <path
-                                    class="opacity-75"
-                                    fill="currentColor"
-                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                                />
-                            </svg>
-                            Connecting...
-                        {:else}
-                            <svg
-                                class="w-5 h-5"
-                                viewBox="0 0 24 24"
-                                fill="currentColor"
-                            >
-                                <path
-                                    d="M21 18v1c0 1.1-.9 2-2 2H5c-1.11 0-2-.9-2-2V5c0-1.1.89-2 2-2h14c1.1 0 2 .9 2 2v1h-9c-1.11 0-2 .9-2 2v8c0 1.1.89 2 2 2h9zm-9-2h10V8H12v8zm4-2.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"
-                                />
-                            </svg>
-                            Connect Wallet
-                        {/if}
-                    </button>
-                </div>
+                        {isLoading ? "Connecting..." : "Connect Wallet"}
+                    </Button>
+                </Card.Content>
             {/if}
-        </div>
 
-        <!-- Info -->
-        <p class="text-center text-gray-500 text-xs">
-            By connecting, you agree to sign messages to verify wallet
-            ownership.
-            <br />No transaction fees required for authentication.
-        </p>
-    </div>
+            <!-- Progress indicator -->
+            <Card.Footer class="flex justify-center gap-2">
+                {#each ["connect", "authenticate", "agent-wallet", "ready"] as step, i}
+                    <div
+                        class="w-2 h-2 rounded-full {currentStep === step
+                            ? 'bg-primary'
+                            : [
+                                    'connect',
+                                    'authenticate',
+                                    'agent-wallet',
+                                    'ready',
+                                ].indexOf(currentStep) > i
+                              ? 'bg-primary/60'
+                              : 'bg-muted'}"
+                    ></div>
+                {/each}
+            </Card.Footer>
+        </Card.Root>
+    </main>
+
+    <footer class="border-t py-6">
+        <div class="container mx-auto px-4 text-center text-muted-foreground">
+            <p>Built with Pear Protocol & Hyperliquid</p>
+        </div>
+    </footer>
 </div>
