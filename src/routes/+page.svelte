@@ -8,8 +8,7 @@
         isAuthenticated,
         walletAddress,
     } from "$lib/stores/auth";
-    import { convex } from "$lib/convex";
-    import { api } from "../convex/_generated/api";
+    import { convex, api } from "$lib/convex";
     import * as pear from "$lib/pear/client";
 
     let isLoading = $state(false);
@@ -21,7 +20,7 @@
     let accessToken = $state<string | null>(null);
 
     // Subscribe to auth store for state updates
-    auth.subscribe((state) => {
+    auth.subscribe((state: { error: string | null; agentWalletAddress: string | null; isConnected: boolean; isAuthenticated: boolean; agentWalletStatus: string | null }) => {
         errorMessage = state.error;
         agentWalletAddress = state.agentWalletAddress;
 
@@ -65,7 +64,7 @@
             });
 
             // Authenticate with Pear Protocol
-            const tokens = await auth.authenticateWithPear(async (tokens) => {
+            const tokens = await auth.authenticateWithPear(async (tokens: { accessToken: string; refreshToken: string; expiresIn: number }) => {
                 // Store tokens in Convex
                 await convex.mutation(api.auth.storePearTokens, {
                     walletAddress: address,

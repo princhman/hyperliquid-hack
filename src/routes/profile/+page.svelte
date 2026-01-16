@@ -4,15 +4,39 @@
 	import { Input } from "$lib/components/ui/input";
 	import { Label } from "$lib/components/ui/label";
 	import { goto } from '$app/navigation';
+	import { convex, api } from "$lib/convex";
+	import { onMount } from "svelte";
 
 	let walletAddress = $state('');
 	let isConnecting = $state(false);
 	let isConnected = $state(false);
 
-	// Mock user data - replace with actual auth data later
-	let user = $state({
-		name: 'John Doe',
-		email: 'john@example.com'
+	// Username state
+	let username = $state('');
+	let isSavingUsername = $state(false);
+	let usernameError = $state<string | null>(null);
+	let usernameSuccess = $state(false);
+
+	// Load user data on mount
+	onMount(async () => {
+		const savedWallet = localStorage.getItem("walletAddress");
+		
+		if (savedWallet) {
+			walletAddress = savedWallet;
+			isConnected = true;
+			
+			// Load user data from Convex
+			try {
+				const user = await convex.query(api.auth.getUserByWallet, { 
+					walletAddress: savedWallet 
+				});
+				if (user && user.username) {
+					username = user.username;
+				}
+			} catch (err) {
+				console.error("Failed to load user:", err);
+			}
+		}
 	});
 
 	async function connectMetaMask() {
@@ -30,6 +54,20 @@
 			
 			walletAddress = accounts[0];
 			isConnected = true;
+			localStorage.setItem("walletAddress", walletAddress);
+			
+			// Create or get user in Convex
+			const result = await convex.mutation(api.auth.getOrCreateUser, {
+				walletAddress: walletAddress
+			});
+			
+			if (result.user.username) {
+				username = result.user.username;
+			}
+			
+			// Store token for session
+			localStorage.setItem("token", result.token);
+			
 			console.log('Connected wallet:', walletAddress);
 		} catch (error) {
 			console.error('Failed to connect MetaMask:', error);
@@ -42,10 +80,49 @@
 	function handleDisconnectWallet() {
 		walletAddress = '';
 		isConnected = false;
+		username = '';
+		localStorage.removeItem("walletAddress");
+		localStorage.removeItem("token");
 	}
 
 	async function handleLogout() {
+		localStorage.removeItem("token");
+		localStorage.removeItem("walletAddress");
 		await goto('/');
+	}
+
+	async function saveUsername() {
+		if (!walletAddress) {
+			usernameError = "Please connect your wallet first";
+			return;
+		}
+
+		if (!username.trim()) {
+			usernameError = "Please enter a username";
+			return;
+		}
+
+		isSavingUsername = true;
+		usernameError = null;
+		usernameSuccess = false;
+
+		try {
+			const result = await convex.mutation(api.auth.updateUsernameByWallet, {
+				walletAddress: walletAddress,
+				username: username,
+			});
+			username = result.username;
+			usernameSuccess = true;
+			
+			// Hide success message after 3 seconds
+			setTimeout(() => {
+				usernameSuccess = false;
+			}, 3000);
+		} catch (err) {
+			usernameError = err instanceof Error ? err.message : "Failed to save username";
+		} finally {
+			isSavingUsername = false;
+		}
 	}
 
 	function formatAddress(address: string): string {
@@ -71,21 +148,42 @@
 		<div class="max-w-2xl mx-auto space-y-8">
 			<h2 class="text-3xl font-bold tracking-tight">Your Profile</h2>
 
-			<!-- Account Info Card -->
+			<!-- Username Card -->
 			<Card.Root>
 				<Card.Header>
-					<Card.Title>Account Information</Card.Title>
-					<Card.Description>Your login details</Card.Description>
+					<Card.Title>Username</Card.Title>
+					<Card.Description>Choose a username to be displayed in games and leaderboards</Card.Description>
 				</Card.Header>
 				<Card.Content>
 					<div class="space-y-4">
 						<div class="grid gap-2">
-							<Label for="profile-name">Name</Label>
-							<Input id="profile-name" value={user.name} disabled />
-						</div>
-						<div class="grid gap-2">
-							<Label for="profile-email">Email</Label>
-							<Input id="profile-email" value={user.email} disabled />
+							<Label for="username">Username</Label>
+							<div class="flex gap-2">
+								<Input 
+									id="username" 
+									bind:value={username} 
+									placeholder="Enter username (3-20 characters)"
+									disabled={!isConnected}
+								/>
+								<Button 
+									onclick={saveUsername} 
+									disabled={isSavingUsername || !isConnected}
+								>
+									{isSavingUsername ? 'Saving...' : 'Save'}
+								</Button>
+							</div>
+							{#if usernameError}
+								<p class="text-sm text-red-500">{usernameError}</p>
+							{/if}
+							{#if usernameSuccess}
+								<p class="text-sm text-green-500">Username saved successfully!</p>
+							{/if}
+							<p class="text-xs text-muted-foreground">
+								Only letters, numbers, and underscores allowed (3-20 characters)
+							</p>
+							{#if !isConnected}
+								<p class="text-sm text-amber-500">Connect your wallet below to set a username</p>
+							{/if}
 						</div>
 					</div>
 				</Card.Content>
