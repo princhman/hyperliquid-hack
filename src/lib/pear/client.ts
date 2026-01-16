@@ -30,6 +30,10 @@ export interface AuthTokens {
   clientId: string;
 }
 
+export interface AgentWalletResponse {
+  agentWalletAddress: string;
+}
+
 export interface AgentWallet {
   address: string;
   status: "ACTIVE" | "EXPIRED" | "NOT_FOUND";
@@ -144,7 +148,7 @@ export async function logout(refreshToken: string): Promise<void> {
 export async function getAgentWallet(
   accessToken: string,
 ): Promise<AgentWallet> {
-  const response = await fetch(`${PEAR_API_BASE}/agent-wallet`, {
+  const response = await fetch(`${PEAR_API_BASE}/agentWallet`, {
     method: "GET",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -159,7 +163,11 @@ export async function getAgentWallet(
     throw new Error(`Failed to get agent wallet: ${error}`);
   }
 
-  return response.json();
+  const data: AgentWalletResponse = await response.json();
+  return {
+    address: data.agentWalletAddress,
+    status: "ACTIVE",
+  };
 }
 
 /**
@@ -167,8 +175,8 @@ export async function getAgentWallet(
  */
 export async function createAgentWallet(
   accessToken: string,
-): Promise<{ address: string }> {
-  const response = await fetch(`${PEAR_API_BASE}/agent-wallet`, {
+): Promise<{ address: string; message: string }> {
+  const response = await fetch(`${PEAR_API_BASE}/agentWallet`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -181,5 +189,9 @@ export async function createAgentWallet(
     throw new Error(`Failed to create agent wallet: ${error}`);
   }
 
-  return response.json();
+  const data = await response.json();
+  return {
+    address: data.agentWalletAddress,
+    message: data.message,
+  };
 }

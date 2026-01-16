@@ -10,6 +10,7 @@ import {
 import { injected } from "@wagmi/connectors";
 import { config } from "$lib/wallet/config";
 import * as pear from "$lib/pear/client";
+import * as hyperliquid from "$lib/hyperliquid/client";
 
 interface AuthState {
   walletAddress: string | null;
@@ -213,6 +214,67 @@ function createAuthStore() {
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Failed to setup agent wallet";
+        update((state) => ({ ...state, error: message }));
+        throw err;
+      }
+    },
+
+    /**
+     * Approve agent wallet on Hyperliquid
+     * This signs the approval message and submits it to Hyperliquid
+     */
+    async approveAgentWallet(
+      agentWalletAddress: string,
+      onApprovalComplete: () => Promise<void>,
+    ) {
+      update((state) => ({ ...state, error: null }));
+
+      try {
+        const account = getAccount(config);
+        if (!account.address) {
+          throw new Error("Wallet not connected");
+        }
+
+        // Step 1: Make sure we're on Arbitrum
+        if (account.chainId !== 42161) {
+          await switchChain(config, { chainId: 42161 });
+        }
+
+        // Step 2: Get the typed data for approval
+        const typedData = hyperliquid.getApproveAgentTypedData({
+          agentAddress: agentWalletAddress,
+          agentName: "Pear Protocol",
+        });
+
+        // Step 3: Sign the approval message
+        const signature = await signTypedData(config, {
+          domain: typedData.domain,
+          types: typedData.types,
+          primaryType: typedData.primaryType,
+          message: typedData.message,
+        });
+
+        // Step 4: Submit to Hyperliquid
+        await hyperliquid.submitAgentApproval(
+          account.address,
+          agentWalletAddress,
+          signature,
+          typedData.nonce,
+          "Pear Protocol",
+        );
+
+        // Step 5: Callback to update status
+        await onApprovalComplete();
+
+        update((state) => ({
+          ...state,
+          agentWalletStatus: "ACTIVE",
+        }));
+
+        return { success: true };
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Failed to approve agent wallet";
         update((state) => ({ ...state, error: message }));
         throw err;
       }
