@@ -18,6 +18,9 @@ export default defineSchema({
     endTime: v.number(),
     buyIn: v.number(),
     // split should be defined later
+
+    // Demo mode - paper trading with simulated money
+    isDemo: v.optional(v.boolean()),
   }),
 
   userToLobby: defineTable({
@@ -44,4 +47,20 @@ export default defineSchema({
     state: v.union(v.literal("open"), v.literal("closed")),
     createdAt: v.number(),
   }),
+
+  // Simulated positions for demo mode (persisted)
+  simulatedPositions: defineTable({
+    positionId: v.string(),
+    address: v.string(),
+    lobbyId: v.id("lobby"),
+    longAsset: v.string(),
+    shortAsset: v.string(),
+    leverage: v.number(),
+    usdValue: v.number(),
+    entryPriceLong: v.number(),
+    entryPriceShort: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_address", ["address"])
+    .index("by_positionId", ["positionId"]),
 });

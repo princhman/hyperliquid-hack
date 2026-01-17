@@ -11,6 +11,7 @@
 import type * as auth from "../auth.js";
 import type * as lobby from "../lobby.js";
 import type * as positions from "../positions.js";
+import type * as simulatedPositions from "../simulatedPositions.js";
 
 import type {
   ApiFromModules,
@@ -22,6 +23,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   lobby: typeof lobby;
   positions: typeof positions;
+  simulatedPositions: typeof simulatedPositions;
 }>;
 
 /**

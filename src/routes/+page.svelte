@@ -17,14 +17,24 @@
     type LeaderboardEntry = FunctionReturnType<
         typeof api.lobby.getLeaderboard
     >[number];
-    type Position = {
-        positionId: string;
+    type AssetPosition = {
         coin: string;
         entryPrice: number;
         actualSize: number;
         leverage: number;
+        marginUsed: number;
         positionValue: number;
         unrealizedPnl: number;
+    };
+
+    type Position = {
+        positionId: string;
+        positionValue: number;
+        marginUsed: number;
+        unrealizedPnl: number;
+        unrealizedPnlPercentage: number;
+        longAssets: AssetPosition[];
+        shortAssets: AssetPosition[];
     };
 
     let walletAddress = $state("");
@@ -46,15 +56,18 @@
 
     // Create lobby form
     let newLobbyName = $state("");
-    let newLobbyBuyIn = $state(1000);
+    let newLobbyBuyIn = $state(10000);
     let newLobbyStartTime = $state("");
     let newLobbyDuration = $state(30); // minutes
+    let newLobbyIsDemo = $state(true); // Default to demo mode
     let creatingLobby = $state(false);
 
     // Active lobby state
     let activeLobby = $state<Lobby | null>(null);
     let leaderboard = $state<LeaderboardEntry[]>([]);
     let positions = $state<Position[]>([]);
+    let userCashBalance = $state(0);
+    let userPositionsValue = $state(0);
     let userBalance = $state(0);
     let syncActive = $state(false);
     let refreshInterval: ReturnType<typeof setInterval> | null = null;
@@ -221,12 +234,14 @@
                 startTime,
                 endTime,
                 buyIn: newLobbyBuyIn,
+                isDemo: newLobbyIsDemo,
             });
 
             newLobbyName = "";
-            newLobbyBuyIn = 1000;
+            newLobbyBuyIn = 10000;
             newLobbyStartTime = "";
             newLobbyDuration = 30;
+            newLobbyIsDemo = true;
             showCreateLobby = false;
             await loadLobbies();
         } catch (e) {
@@ -243,16 +258,24 @@
         error = "";
 
         try {
-            // Step 1: Send USDC buy-in payment
-            const payment = await sendBuyIn(lobby.buyIn);
-
-            // Step 2: Register in lobby with transaction ID
-            await convex.mutation(api.lobby.joinLobby, {
-                userId: currentUser.id as Id<"users">,
-                lobbyId: lobby._id,
-                walletAddress: currentUser.walletAddress,
-                transactionId: payment.hash,
-            });
+            // Check if this is a demo lobby
+            if (lobby.isDemo) {
+                // Demo lobby - no payment required
+                await convex.mutation(api.lobby.joinDemoLobby, {
+                    userId: currentUser.id as Id<"users">,
+                    lobbyId: lobby._id,
+                    walletAddress: currentUser.walletAddress,
+                });
+            } else {
+                // Real lobby - requires USDC payment
+                const payment = await sendBuyIn(lobby.buyIn);
+                await convex.mutation(api.lobby.joinLobby, {
+                    userId: currentUser.id as Id<"users">,
+                    lobbyId: lobby._id,
+                    walletAddress: currentUser.walletAddress,
+                    transactionId: payment.hash,
+                });
+            }
 
             await loadLobbies();
         } catch (e) {
@@ -348,17 +371,23 @@
             (e) => e.username === currentUser?.username,
         );
         userBalance = userEntry?.totalValue ?? activeLobby.buyIn;
+        userCashBalance = userEntry?.balance ?? activeLobby.buyIn;
+        userPositionsValue = userEntry?.valueInPositions ?? 0;
 
         // Load positions
         try {
-            const res = await fetch("/api/positions", {
+            const params = new URLSearchParams({
+                lobbyId: activeLobby._id,
+                address: currentUser.walletAddress,
+            });
+            const res = await fetch(`/api/positions?${params}`, {
                 headers: {
                     Authorization: `Bearer ${import.meta.env.VITE_PEAR_API_TOKEN}`,
                 },
             });
             if (res.ok) {
                 const data = await res.json();
-                positions = data.positions || [];
+                positions = Array.isArray(data) ? data : [];
             }
         } catch (e) {
             console.error("Failed to load positions:", e);
@@ -404,6 +433,7 @@
                 body: JSON.stringify({
                     lobbyId: activeLobby._id,
                     userId: currentUser.id,
+                    address: currentUser.walletAddress,
                     slippage: buySlippage,
                     executionType: buyExecutionType,
                     leverage: buyLeverage,
@@ -593,11 +623,36 @@
                         <ArrowLeft class="size-4" />
                     </Button>
                     <div>
-                        <h1 class="text-2xl font-bold">{activeLobby.name}</h1>
+                        <div class="flex items-center gap-2">
+                            <h1 class="text-2xl font-bold">
+                                {activeLobby.name}
+                            </h1>
+                            {#if activeLobby.isDemo}
+                                <span
+                                    class="text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300"
+                                >
+                                    DEMO
+                                </span>
+                            {/if}
+                        </div>
                         <p class="text-sm text-muted-foreground">
-                            Balance: <span class="font-mono font-bold"
+                            Total: <span class="font-mono font-bold"
                                 >${userBalance.toFixed(2)}</span
                             >
+                            <span class="mx-1">|</span>
+                            Cash:
+                            <span class="font-mono"
+                                >${userCashBalance.toFixed(2)}</span
+                            >
+                            <span class="mx-1">|</span>
+                            In Trades:
+                            <span class="font-mono"
+                                >${userPositionsValue.toFixed(2)}</span
+                            >
+                            {#if activeLobby.isDemo}
+                                <span class="text-purple-600 ml-1">(Paper)</span
+                                >
+                            {/if}
                             <span class={getStatusColor(activeLobby.status)}>
                                 - {activeLobby.status}</span
                             >
@@ -702,21 +757,37 @@
                         <Card.Content>
                             <div class="space-y-2">
                                 {#each positions as pos}
+                                    {@const longAsset = pos.longAssets?.[0]}
+                                    {@const shortAsset = pos.shortAssets?.[0]}
+                                    {@const leverage = longAsset?.leverage ?? 1}
                                     <div
                                         class="flex items-center justify-between p-3 border rounded-md"
                                     >
                                         <div>
-                                            <span class="font-bold"
-                                                >{pos.coin}</span
-                                            >
+                                            <div class="font-bold">
+                                                <span class="text-green-600"
+                                                    >Long {longAsset?.coin ??
+                                                        "?"}</span
+                                                >
+                                                <span
+                                                    class="text-muted-foreground mx-1"
+                                                    >/</span
+                                                >
+                                                <span class="text-red-600"
+                                                    >Short {shortAsset?.coin ??
+                                                        "?"}</span
+                                                >
+                                            </div>
                                             <span
-                                                class="text-muted-foreground ml-2"
-                                                >{pos.leverage}x</span
+                                                class="text-muted-foreground text-sm"
                                             >
+                                                {leverage}x leverage
+                                            </span>
                                         </div>
                                         <div class="text-right">
-                                            <div>
-                                                ${pos.positionValue.toFixed(2)}
+                                            <div class="font-mono">
+                                                ${pos.marginUsed?.toFixed(2) ??
+                                                    "0.00"}
                                             </div>
                                             <div
                                                 class={pos.unrealizedPnl >= 0
@@ -725,9 +796,14 @@
                                             >
                                                 {pos.unrealizedPnl >= 0
                                                     ? "+"
-                                                    : ""}{pos.unrealizedPnl.toFixed(
+                                                    : ""}${pos.unrealizedPnl?.toFixed(
                                                     2,
-                                                )}
+                                                ) ?? "0.00"}
+                                                <span class="text-xs ml-1">
+                                                    ({pos.unrealizedPnlPercentage?.toFixed(
+                                                        1,
+                                                    ) ?? "0.0"}%)
+                                                </span>
                                             </div>
                                         </div>
                                         <Button
@@ -879,7 +955,11 @@
                                 />
                             </div>
                             <div class="space-y-2">
-                                <Label for="buyIn">Buy-in Amount</Label>
+                                <Label for="buyIn"
+                                    >{newLobbyIsDemo
+                                        ? "Starting Balance"
+                                        : "Buy-in Amount"}</Label
+                                >
                                 <Input
                                     id="buyIn"
                                     type="number"
@@ -887,6 +967,28 @@
                                     min={100}
                                     disabled={creatingLobby}
                                 />
+                            </div>
+                        </div>
+
+                        <div
+                            class="flex items-center gap-3 p-3 rounded-md border bg-muted/50"
+                        >
+                            <input
+                                id="isDemo"
+                                type="checkbox"
+                                bind:checked={newLobbyIsDemo}
+                                disabled={creatingLobby}
+                                class="h-4 w-4"
+                            />
+                            <div>
+                                <Label for="isDemo" class="cursor-pointer"
+                                    >Demo Mode (Paper Trading)</Label
+                                >
+                                <p class="text-xs text-muted-foreground">
+                                    {newLobbyIsDemo
+                                        ? "No real money required. Players get paper money to trade."
+                                        : "Real USDC payment required to join."}
+                                </p>
                             </div>
                         </div>
                     </Card.Content>
@@ -959,6 +1061,13 @@
                                             </Card.Description>
                                         </div>
                                         <div class="flex items-center gap-2">
+                                            {#if lobby.isDemo}
+                                                <span
+                                                    class="text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300"
+                                                >
+                                                    DEMO
+                                                </span>
+                                            {/if}
                                             {#if lobby.hasJoined}
                                                 <span
                                                     class="text-sm font-medium text-green-600 dark:text-green-400"
@@ -1023,7 +1132,11 @@
                                             class="w-full"
                                         >
                                             {#if joiningLobbyId === lobby._id}
-                                                Paying...
+                                                {lobby.isDemo
+                                                    ? "Joining..."
+                                                    : "Paying..."}
+                                            {:else if lobby.isDemo}
+                                                Join Demo (${lobby.buyIn} Paper)
                                             {:else}
                                                 Join Lobby (${lobby.buyIn} USDC)
                                             {/if}
@@ -1033,7 +1146,9 @@
                                             onclick={() => enterLobby(lobby)}
                                             class="w-full"
                                         >
-                                            Trade
+                                            {lobby.isDemo
+                                                ? "Trade (Demo)"
+                                                : "Trade"}
                                         </Button>
                                     {/if}
                                 </Card.Footer>

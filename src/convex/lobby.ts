@@ -113,6 +113,7 @@ export const createLobby = mutation({
     startTime: v.number(),
     endTime: v.number(),
     buyIn: v.number(),
+    isDemo: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const id = await ctx.db.insert("lobby", {
@@ -122,6 +123,7 @@ export const createLobby = mutation({
       startTime: args.startTime,
       endTime: args.endTime,
       buyIn: args.buyIn,
+      isDemo: args.isDemo ?? false,
     });
 
     return { id };
@@ -179,6 +181,60 @@ export const joinLobby = mutation({
 });
 
 /**
+ * Join a demo lobby (no payment required - paper trading)
+ */
+export const joinDemoLobby = mutation({
+  args: {
+    userId: v.id("users"),
+    lobbyId: v.id("lobby"),
+    walletAddress: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // Check if already joined
+    const existing = await ctx.db
+      .query("userToLobby")
+      .filter((q) =>
+        q.and(
+          q.eq(q.field("userId"), args.userId),
+          q.eq(q.field("lobbyId"), args.lobbyId),
+        ),
+      )
+      .first();
+
+    if (existing) {
+      throw new Error("Already joined this lobby");
+    }
+
+    // Get lobby and verify it's a demo lobby
+    const lobby = await ctx.db.get(args.lobbyId);
+    if (!lobby) {
+      throw new Error("Lobby not found");
+    }
+
+    if (!lobby.isDemo) {
+      throw new Error("This is not a demo lobby. Payment is required.");
+    }
+
+    const status = deriveStatus(lobby.startTime, lobby.endTime);
+    if (status !== "not started") {
+      throw new Error("Cannot join a lobby that has already started");
+    }
+
+    // Join with paper money (buyIn amount) - no transactionId needed
+    const id = await ctx.db.insert("userToLobby", {
+      userId: args.userId,
+      lobbyId: args.lobbyId,
+      walletAddress: args.walletAddress.toLowerCase(),
+      balance: lobby.buyIn,
+      valueInPositions: 0,
+      // No transactionId for demo lobbies
+    });
+
+    return { id, isDemo: true, balance: lobby.buyIn };
+  },
+});
+
+/**
  * Check if user is in a lobby
  */
 export const isUserInLobby = query({
@@ -225,6 +281,8 @@ export const getLeaderboard = query({
         return {
           oderId: p.userId,
           username: user?.username || "Unknown",
+          balance: p.balance,
+          valueInPositions: p.valueInPositions,
           totalValue,
           pnl,
         };
