@@ -1,5 +1,5 @@
 import { parseUnits } from "viem";
-import { getWalletClient, getChainId, switchChain } from "@wagmi/core";
+import { getWalletClient, getAccount, switchChain } from "@wagmi/core";
 import { config } from "./config";
 
 const USDC_ADDRESSES: Record<number, `0x${string}`> = {
@@ -20,6 +20,7 @@ const ERC20_ABI = [
     outputs: [{ name: "", type: "bool" }],
   },
 ] as const;
+
 /**
  * Send USDC with automatic network check
  */
@@ -28,19 +29,39 @@ export async function sendUSDC(
   amount: string,
   requiredChainId: number = 42161
 ) {
-  // Check current network
-  const currentChainId = getChainId(config);
+  console.log('sendUSDC called with:', { toAddress, amount, requiredChainId });
+
+  // Get account info to check connection and current chain
+  const account = getAccount(config);
   
-  if (currentChainId !== requiredChainId) {
-    // Prompt user to switch networks
-    await switchChain(config, { chainId: requiredChainId as 1 | 42161 | 8453 });
+  console.log('Account info:', account);
+
+  if (!account.isConnected || !account.address) {
+    throw new Error("Wallet not connected. Please connect your wallet first.");
   }
 
-  // Get wallet client
+  const currentChainId = account.chainId;
+  console.log('Current chain ID:', currentChainId, 'Required:', requiredChainId);
+  
+  // Check if we need to switch networks
+  if (currentChainId !== requiredChainId) {
+    console.log('Switching to chain:', requiredChainId);
+    try {
+      await switchChain(config, { chainId: requiredChainId as 1 | 42161 | 8453 });
+      console.log('Chain switched successfully');
+    } catch (switchError) {
+      console.error('Failed to switch chain:', switchError);
+      throw new Error(`Please switch to the correct network in your wallet (Chain ID: ${requiredChainId})`);
+    }
+  }
+
+  // Get wallet client for the required chain
   const walletClient = await getWalletClient(config, { chainId: requiredChainId });
   
+  console.log('Wallet client:', walletClient);
+
   if (!walletClient) {
-    throw new Error("Wallet not connected");
+    throw new Error("Failed to get wallet client. Please reconnect your wallet.");
   }
 
   const usdcAddress = USDC_ADDRESSES[requiredChainId];
@@ -48,14 +69,42 @@ export async function sendUSDC(
     throw new Error(`USDC not supported on chain ${requiredChainId}`);
   }
 
-  const amountInUnits = parseUnits(amount, 6);
+  console.log('USDC address for chain:', usdcAddress);
 
-  const hash = await walletClient.writeContract({
-    address: usdcAddress,
-    abi: ERC20_ABI,
-    functionName: "transfer",
-    args: [toAddress, amountInUnits],
-  });
+  // Parse amount to proper units (USDC has 6 decimals)
+  let amountInUnits;
+  try {
+    amountInUnits = parseUnits(amount, 6);
+    console.log('Amount in units:', amountInUnits.toString());
+  } catch (parseError) {
+    console.error('Failed to parse amount:', parseError);
+    throw new Error(`Invalid amount: ${amount}`);
+  }
 
-  return hash;
+  console.log('Sending transaction...');
+
+  try {
+    const hash = await walletClient.writeContract({
+      address: usdcAddress,
+      abi: ERC20_ABI,
+      functionName: "transfer",
+      args: [toAddress, amountInUnits],
+    });
+
+    console.log('Transaction sent! Hash:', hash);
+    return hash;
+  } catch (txError) {
+    console.error('Transaction failed:', txError);
+    
+    // Handle specific transaction errors
+    if (txError instanceof Error) {
+      if (txError.message.includes('insufficient funds')) {
+        throw new Error('Insufficient USDC balance');
+      } else if (txError.message.includes('user rejected')) {
+        throw new Error('Transaction rejected by user');
+      }
+    }
+    
+    throw txError;
+  }
 }

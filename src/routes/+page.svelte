@@ -15,7 +15,6 @@
         isNewUser: boolean;
     } | null>(null);
 
-    // Transfer state - no recipient needed anymore
     
 
     async function connectWallet() {
