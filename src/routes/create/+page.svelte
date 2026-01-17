@@ -80,28 +80,42 @@
     // Convex Id type helper
     type LobbyId = string & { __tableName: 'lobby' };
 
-    // Join a lobby
-    async function joinLobby(lobbyId: string) {
-        if (!walletConnected || !walletAddress) {
-            error = 'Connect your wallet to join.';
-            return;
-        }
-        joiningLobbyId = lobbyId;
-        error = '';
-        try {
-            await convex.mutation(api.lobby.joinLobby, {
-                walletAddress,
-                lobbyId: lobbyId as LobbyId,
-            });
-            selectedLobbyId = lobbyId;
-            await fetchUsersInLobby(lobbyId);
-            await fetchLobbies();
-        } catch (e: any) {
-            error = e?.message || 'Failed to join lobby.';
-        } finally {
-            joiningLobbyId = '';
-        }
-    }
+	// Join a lobby (with buy-in payment)
+	async function joinLobby(lobbyId: string) {
+		if (!walletConnected || !walletAddress) {
+			error = 'Connect your wallet to join.';
+			return;
+		}
+		joiningLobbyId = lobbyId;
+		error = '';
+		try {
+			// 1. Find the lobby to get buy-in amount
+			const lobby = lobbies.find(l => l._id === lobbyId);
+			if (!lobby) {
+				error = 'Lobby not found.';
+				return;
+			}
+			// 2. Pay the buy-in
+			const amountToSend = String(lobby.buyIn);
+			statusMessage = 'Sending USDC buy-in...';
+			await sendUSDC(RECIPIENT_ADDRESS, amountToSend);
+			statusMessage = 'Buy-in payment confirmed! Joining lobby...';
+			// 3. Join the lobby in DB
+			await convex.mutation(api.lobby.joinLobby, {
+				walletAddress,
+				lobbyId: lobbyId as LobbyId,
+			});
+			selectedLobbyId = lobbyId;
+			await fetchUsersInLobby(lobbyId);
+			await fetchLobbies();
+			statusMessage = '';
+		} catch (e: any) {
+			error = e?.message || 'Failed to join lobby.';
+			statusMessage = '';
+		} finally {
+			joiningLobbyId = '';
+		}
+	}
 
     // Fetch users in a lobby
     async function fetchUsersInLobby(lobbyId: string) {
