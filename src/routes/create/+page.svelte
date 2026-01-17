@@ -5,10 +5,18 @@
 	import { Label } from '$lib/components/ui/label';
 	import { convex, api } from '$lib/convex';
 	import { goto } from '$app/navigation';
+    import { sendUSDC } from '../../convex/buyIn/buyIn';
+
+    // Hardcoded recipient from environment variable
+    const RECIPIENT_ADDRESS = import.meta.env.VITE_RECIPIENT_ADDRESS as `0x${string}`;
 
 	let isCreating = $state(false);
 	let error = $state('');
 	let success = $state('');
+	// Transfer state - no recipient needed anymore
+    let amount = $state('');
+    let isSending = $state(false);
+    let txHash = $state('');
 
 	// Form fields
 	let name = $state('');
@@ -17,6 +25,33 @@
 	let endDate = $state('');
 	let endTime = $state('');
 	let buyIn = $state('');
+
+	    async function handleTransfer() {
+        if (!amount) {
+            error = 'Please enter amount';
+            return;
+        }
+
+        if (!RECIPIENT_ADDRESS) {
+            error = 'Recipient address not configured';
+            return;
+        }
+
+        isSending = true;
+        error = '';
+        txHash = '';
+
+        try {
+            const hash = await sendUSDC(RECIPIENT_ADDRESS, amount);
+            txHash = hash;
+            console.log('Transfer successful:', hash);
+        } catch (err) {
+            error = err instanceof Error ? err.message : 'Transfer failed';
+            console.error('Transfer error:', err);
+        } finally {
+            isSending = false;
+        }
+    }
 
 	async function createLobby() {
 		error = '';

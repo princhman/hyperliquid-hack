@@ -4,10 +4,6 @@
     import { Input } from '$lib/components/ui/input';
     import { Label } from '$lib/components/ui/label';
     import { convex, api } from '$lib/convex';
-    import { sendUSDC } from '../convex/buyIn/buyIn';
-
-    // Hardcoded recipient from environment variable
-    const RECIPIENT_ADDRESS = import.meta.env.VITE_RECIPIENT_ADDRESS as `0x${string}`;
 
     let isConnecting = $state(false);
     let isSavingUsername = $state(false);
@@ -19,10 +15,6 @@
         isNewUser: boolean;
     } | null>(null);
 
-    // Transfer state - no recipient needed anymore
-    let amount = $state('');
-    let isSending = $state(false);
-    let txHash = $state('');
 
     async function connectWallet() {
         isConnecting = true;
@@ -86,38 +78,11 @@
         }
     }
 
-    async function handleTransfer() {
-        if (!amount) {
-            error = 'Please enter amount';
-            return;
-        }
 
-        if (!RECIPIENT_ADDRESS) {
-            error = 'Recipient address not configured';
-            return;
-        }
-
-        isSending = true;
-        error = '';
-        txHash = '';
-
-        try {
-            const hash = await sendUSDC(RECIPIENT_ADDRESS, amount);
-            txHash = hash;
-            console.log('Transfer successful:', hash);
-        } catch (err) {
-            error = err instanceof Error ? err.message : 'Transfer failed';
-            console.error('Transfer error:', err);
-        } finally {
-            isSending = false;
-        }
-    }
 
     function disconnect() {
         user = null;
         usernameInput = '';
-        amount = '';
-        txHash = '';
         localStorage.removeItem('walletAddress');
     }
 
@@ -188,46 +153,6 @@
                             <p class="text-xs text-muted-foreground">
                                 Current: <span class="font-medium">{user.username}</span>
                             </p>
-                        {/if}
-                    </div>
-
-                    <!-- USDC Transfer Section -->
-                    <div class="rounded-lg border p-4 space-y-3">
-                        <h3 class="font-semibold text-center">Buy In</h3>
-
-                        <div class="space-y-2">
-                            <Label for="amount">Amount (USDC)</Label>
-                            <Input
-                                id="amount"
-                                type="text"
-                                placeholder="10.00"
-                                bind:value={amount}
-                            />
-                        </div>
-
-                        <Button
-                            onclick={handleTransfer}
-                            class="w-full"
-                            disabled={isSending || !amount}
-                        >
-                            {#if isSending}
-                                Sending...
-                            {:else}
-                                Send USDC
-                            {/if}
-                        </Button>
-
-                        {#if txHash}
-                            <div class="text-center text-sm">
-                                <p class="text-green-600">✅ Sent successfully!</p>
-                                <a
-                                    href="https://arbiscan.io/tx/{txHash}"
-                                    target="_blank"
-                                    class="text-blue-500 underline break-all"
-                                >
-                                    View transaction
-                                </a>
-                            </div>
                         {/if}
                     </div>
 
