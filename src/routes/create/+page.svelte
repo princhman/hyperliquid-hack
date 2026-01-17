@@ -150,6 +150,7 @@
 				buyIn: parseFloat(buyIn),
 			});
 
+
 			success = `Lobby "${result.name}" created successfully! Transaction: ${txHash.substring(0, 10)}...`;
 			console.log('Lobby created:', result);
 

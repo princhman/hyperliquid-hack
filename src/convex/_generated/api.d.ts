@@ -8,8 +8,8 @@
  * @module
  */
 
-import type * as auth from "../auth.js";
-import type * as lobby from "../lobby.js";
+import type * as auth from "../auth.ts";
+import type * as lobby from "../lobby.ts";
 
 import type {
   ApiFromModules,

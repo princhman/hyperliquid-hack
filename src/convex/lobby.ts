@@ -40,7 +40,7 @@ export const createLobby = mutation({
       throw new Error("End time must be after start time.");
     }
 
-    // Create the lobby
+    // Step 1: Create the lobby
     const lobbyId = await ctx.db.insert("lobby", {
       name: args.name,
       status: "not started",
@@ -51,40 +51,31 @@ export const createLobby = mutation({
       buyIn: args.buyIn,
     });
 
+    console.log("Lobby created with ID:", lobbyId);
+    console.log("Now creating userToLobby with:", {
+      userId: user._id,
+      lobbyId: lobbyId,
+      walletAddress: walletAddress,
+      balance: Number(args.buyIn),
+      valueInPositions: 0.0,
+    });
+
+    // Step 2: Create userToLobby entry (creator joins automatically)
+    // FIX: Explicitly convert to float64 compatible values
+    const userToLobbyId = await ctx.db.insert("userToLobby", {
+      userId: user._id,
+      lobbyId: lobbyId,
+      walletAddress: walletAddress,
+      balance: Number(args.buyIn),      // Ensure it's a number
+      valueInPositions: 0.0,            // Use 0.0 not 0 for float64
+    });
+
+    console.log("UserToLobby created with ID:", userToLobbyId);
+
     return {
       lobbyId,
       name: args.name,
+      userToLobbyId,
     };
-  },
-});
-
-/**
- * Get all lobbies
- */
-export const getLobbies = query({
-  args: {},
-  handler: async (ctx) => {
-    const lobbies = await ctx.db.query("lobby").collect();
-    return lobbies;
-  },
-});
-
-/**
- * Get lobbies by status
- */
-export const getLobbiesByStatus = query({
-  args: {
-    status: v.union(
-      v.literal("not started"),
-      v.literal("started"),
-      v.literal("finished")
-    ),
-  },
-  handler: async (ctx, args) => {
-    const lobbies = await ctx.db
-      .query("lobby")
-      .withIndex("by_status", (q) => q.eq("status", args.status))
-      .collect();
-    return lobbies;
   },
 });
