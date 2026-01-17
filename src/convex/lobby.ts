@@ -116,13 +116,14 @@ export const createLobby = mutation({
 });
 
 /**
- * Join a lobby
+ * Join a lobby (requires transactionId from USDC payment)
  */
 export const joinLobby = mutation({
   args: {
     userId: v.id("users"),
     lobbyId: v.id("lobby"),
     walletAddress: v.string(),
+    transactionId: v.string(),
   },
   handler: async (ctx, args) => {
     // Check if already joined
@@ -156,6 +157,7 @@ export const joinLobby = mutation({
       walletAddress: args.walletAddress.toLowerCase(),
       balance: lobby.buyIn,
       valueInPositions: 0,
+      transactionId: args.transactionId,
     });
 
     return { id };

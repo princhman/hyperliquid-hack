@@ -9,6 +9,9 @@
     import type { Id } from "../convex/_generated/dataModel";
     import type { FunctionReturnType } from "convex/server";
     import { LogOut, Plus } from "@lucide/svelte";
+    import { sendBuyIn } from "$lib/usdc";
+    import { reconnect } from "@wagmi/core";
+    import { config } from "$lib/wagmi";
 
     type Lobby = FunctionReturnType<typeof api.lobby.getLobbies>[number];
 
@@ -47,6 +50,9 @@
     }
 
     onMount(async () => {
+        // Reconnect wagmi on page load
+        await reconnect(config);
+
         const storedWallet = auth.setFromStorage();
         if (storedWallet) {
             await checkExistingUser(storedWallet);
@@ -196,18 +202,24 @@
         }
     }
 
-    async function joinLobby(lobbyId: Id<"lobby">) {
+    async function joinLobby(lobby: Lobby) {
         if (!currentUser) return;
 
-        joiningLobbyId = lobbyId;
+        joiningLobbyId = lobby._id;
         error = "";
 
         try {
+            // Step 1: Send USDC buy-in payment
+            const payment = await sendBuyIn(lobby.buyIn);
+
+            // Step 2: Register in lobby with transaction ID
             await convex.mutation(api.lobby.joinLobby, {
                 userId: currentUser.id as Id<"users">,
-                lobbyId,
+                lobbyId: lobby._id,
                 walletAddress: currentUser.walletAddress,
+                transactionId: payment.hash,
             });
+
             await loadLobbies();
         } catch (e) {
             error = e instanceof Error ? e.message : "Failed to join lobby";
@@ -549,15 +561,15 @@
                                 {#if lobby.status === "not started" && !lobby.hasJoined}
                                     <Card.Footer>
                                         <Button
-                                            onclick={() => joinLobby(lobby._id)}
+                                            onclick={() => joinLobby(lobby)}
                                             disabled={joiningLobbyId ===
                                                 lobby._id}
                                             class="w-full"
                                         >
                                             {#if joiningLobbyId === lobby._id}
-                                                Joining...
+                                                Paying...
                                             {:else}
-                                                Join Lobby
+                                                Join Lobby (${lobby.buyIn} USDC)
                                             {/if}
                                         </Button>
                                     </Card.Footer>
