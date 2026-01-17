@@ -59,6 +59,9 @@
                 throw new Error("Wallet not connected");
             }
 
+            // Store wallet address in localStorage for other pages
+            localStorage.setItem("walletAddress", address);
+
             // Create user if doesn't exist
             await convex.mutation(api.auth.getOrCreateUser, {
                 walletAddress: address,
@@ -220,9 +223,12 @@
                                 : "Active"}
                         </p>
                     </div>
-                    <Button class="w-full" onclick={goToLobby}>
+                    <a
+                        href="/lobby"
+                        class="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-xs transition-all hover:bg-primary/90"
+                    >
                         Enter Lobby
-                    </Button>
+                    </a>
                     <Button
                         variant="outline"
                         class="w-full"
