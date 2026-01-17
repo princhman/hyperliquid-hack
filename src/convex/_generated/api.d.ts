@@ -8,8 +8,10 @@
  * @module
  */
 
-import type * as auth from "../auth.ts";
-import type * as lobby from "../lobby.ts";
+import type * as auth from "../auth.js";
+import type * as buyIn_buyIn from "../buyIn/buyIn.js";
+import type * as buyIn_config from "../buyIn/config.js";
+import type * as lobby from "../lobby.js";
 
 import type {
   ApiFromModules,
@@ -19,6 +21,8 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  "buyIn/buyIn": typeof buyIn_buyIn;
+  "buyIn/config": typeof buyIn_config;
   lobby: typeof lobby;
 }>;
 

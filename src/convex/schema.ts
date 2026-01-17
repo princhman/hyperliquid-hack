@@ -41,7 +41,7 @@ export default defineSchema({
     balance: v.float64(),
     valueInPositions: v.float64(),
     transactionId: v.optional(v.string()),
-  }),
+  }).index("by_lobbyId", ["lobbyId"]),
 
   balanceHistory: defineTable({
     userId: v.id("users"),

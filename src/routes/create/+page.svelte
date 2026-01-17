@@ -9,6 +9,8 @@
 	import { getAccount, connect } from '@wagmi/core';
 	import { config } from '../../convex/buyIn/config';
 	import { injected } from '@wagmi/connectors';
+	import { onMount } from 'svelte';
+	import { derived, writable } from 'svelte/store';
 
 	// Hardcoded recipient from environment variable
 	const RECIPIENT_ADDRESS = import.meta.env.VITE_RECIPIENT_ADDRESS as `0x${string}`;
@@ -29,6 +31,86 @@
 	let endTime = $state('');
 	let buyIn = $state('');
 
+
+	// Lobbies state
+	type Lobby = {
+		_id: string;
+		name: string;
+		buyIn: number;
+		startTime: number;
+		endTime: number;
+	};
+	type User = {
+		_id: string;
+		_creationTime: number;
+		username?: string;
+		lastLoginAt?: number;
+		walletStatus?: 'ACTIVE' | 'EXPIRED' | 'NOT_FOUND';
+		walletAddress: string;
+		createdAt: number;
+	};
+	let lobbies = $state<Lobby[]>([]);
+	let loadingLobbies = $state(true);
+	let selectedLobbyId = $state<string>('');
+	let usersInLobby = $state<User[]>([]);
+	let joiningLobbyId = $state<string>('');
+
+	// Fetch lobbies on mount and after create/join
+	async function fetchLobbies() {
+	  loadingLobbies = true;
+	  try {
+	    lobbies = await convex.query(api.lobby.getLobbies, {});
+	  } catch (e) {
+	    console.error('Failed to fetch lobbies', e);
+	  } finally {
+	    loadingLobbies = false;
+	  }
+	}
+
+	onMount(fetchLobbies);
+
+	// Convex Id type helper
+	type LobbyId = string & { __tableName: 'lobby' };
+
+	// Join a lobby
+	async function joinLobby(lobbyId: string) {
+		if (!walletConnected || !walletAddress) {
+			error = 'Connect your wallet to join.';
+			return;
+		}
+		joiningLobbyId = lobbyId;
+		error = '';
+		try {
+			await convex.mutation(api.lobby.joinLobby, {
+				walletAddress,
+				lobbyId: lobbyId as LobbyId,
+			});
+			selectedLobbyId = lobbyId;
+			await fetchUsersInLobby(lobbyId);
+			await fetchLobbies();
+		} catch (e: any) {
+			error = e?.message || 'Failed to join lobby.';
+		} finally {
+			joiningLobbyId = '';
+		}
+	}
+
+	// Fetch users in a lobby
+	async function fetchUsersInLobby(lobbyId: string) {
+		try {
+			const result = await convex.query(api.lobby.getUsersInLobby, { lobbyId: lobbyId as LobbyId }) as (User | null)[];
+			usersInLobby = (result ?? []).filter((u): u is User => u !== null);
+			
+		} catch (e) {
+			usersInLobby = [];
+		}
+	}
+
+	// Show users when selecting a lobby
+	async function selectLobby(lobbyId: string) {
+		selectedLobbyId = lobbyId;
+		await fetchUsersInLobby(lobbyId);
+	}
 	// Check wallet connection on mount
 	$effect(() => {
 		const account = getAccount(config);
@@ -312,4 +394,59 @@
 			</a>
 		</Card.Footer>
 	</Card.Root>
+
+  <!-- Lobbies List -->
+  <Card.Root class="w-full max-w-2xl mt-8">
+    <Card.Header class="space-y-1 text-center">
+      <Card.Title class="text-xl font-bold">Available Lobbies</Card.Title>
+      <Card.Description>Join a lobby to compete</Card.Description>
+    </Card.Header>
+    <Card.Content class="space-y-4">
+      {#if loadingLobbies}
+        <div class="text-center text-muted-foreground">Loading lobbies...</div>
+      {:else if lobbies.length === 0}
+        <div class="text-center text-muted-foreground">No lobbies available.</div>
+      {:else}
+        <div class="space-y-4">
+          {#each lobbies as lobby}
+            <div class="border rounded-lg p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-2 {selectedLobbyId === lobby._id ? 'bg-blue-50' : ''}">
+              <div>
+                <div class="font-semibold">{lobby.name}</div>
+                <div class="text-xs text-muted-foreground">Buy-in: {lobby.buyIn} USDC</div>
+                <div class="text-xs text-muted-foreground">Start: {new Date(lobby.startTime).toLocaleString()}</div>
+                <div class="text-xs text-muted-foreground">End: {new Date(lobby.endTime).toLocaleString()}</div>
+              </div>
+              <div class="flex flex-col gap-2 items-end">
+                <Button
+                  disabled={!walletConnected || joiningLobbyId === lobby._id}
+                  onclick={() => joinLobby(lobby._id)}
+                  class="w-28"
+                >
+                  {joiningLobbyId === lobby._id ? 'Joining...' : 'Join'}
+                </Button>
+                <Button
+                  variant="secondary"
+                  onclick={() => selectLobby(lobby._id)}
+                  class="w-28"
+                >
+                  View Users
+                </Button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      {#if selectedLobbyId && usersInLobby.length > 0}
+        <div class="mt-6">
+          <div class="font-semibold mb-2 text-center">Users in Lobby</div>
+          <ul class="space-y-1">
+            {#each usersInLobby as user}
+              <li class="text-xs text-muted-foreground text-center">{user.username || user.walletAddress}</li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+    </Card.Content>
+  </Card.Root>
 </div>

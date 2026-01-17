@@ -1,3 +1,69 @@
+/**
+ * List all lobbies
+ */
+export const getLobbies = query({
+  args: {},
+  handler: async (ctx, args) => {
+    const lobbies = await ctx.db.query("lobby").collect();
+    return lobbies;
+  },
+});
+
+/**
+ * Join a lobby (add user to userToLobby)
+ */
+export const joinLobby = mutation({
+  args: {
+    walletAddress: v.string(),
+    lobbyId: v.id("lobby"),
+  },
+  handler: async (ctx, args) => {
+    const walletAddress = args.walletAddress.toLowerCase();
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_wallet", (q) => q.eq("walletAddress", walletAddress))
+      .first();
+    if (!user) {
+      throw new Error("User not found. Please log in first.");
+    }
+    // Check if already joined
+    const existing = await ctx.db
+      .query("userToLobby")
+      .withIndex("by_lobbyId", (q) => q.eq("lobbyId", args.lobbyId))
+      .collect();
+    if (existing.some((u) => u.userId === user._id)) {
+      throw new Error("Already joined this lobby.");
+    }
+    const userToLobbyId = await ctx.db.insert("userToLobby", {
+      userId: user._id,
+      lobbyId: args.lobbyId,
+      walletAddress: walletAddress,
+      balance: 0.0,
+      valueInPositions: 0.0,
+    });
+    return { userToLobbyId };
+  },
+});
+
+/**
+ * List all users in a lobby
+ */
+export const getUsersInLobby = query({
+  args: {
+    lobbyId: v.id("lobby"),
+  },
+  handler: async (ctx, args) => {
+    const userToLobbyEntries = await ctx.db
+      .query("userToLobby")
+      .withIndex("by_lobbyId", (q) => q.eq("lobbyId", args.lobbyId))
+      .collect();
+    const userIds = userToLobbyEntries.map((entry) => entry.userId);
+    const users = await Promise.all(
+      userIds.map((id) => ctx.db.get(id))
+    );
+    return users.filter(Boolean);
+  },
+});
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 
