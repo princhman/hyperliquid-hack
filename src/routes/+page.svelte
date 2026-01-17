@@ -160,107 +160,62 @@
                         <p class="font-mono text-sm break-all">{user.walletAddress}</p>
                     </div>
 
-                    <div class="space-y-2">
-                        <Label for="username">Username</Label>
-                        <div class="flex gap-2">
-                            <Input
-                                id="username"
-                                type="text"
-                                placeholder="Enter your username"
-                                bind:value={usernameInput}
-                                maxlength={32}
-                            />
-                            <Button
-                                onclick={saveUsername}
-                                disabled={isSavingUsername || !usernameInput.trim()}
-                            >
-                                {#if isSavingUsername}
-                                    Saving...
-                                {:else}
-                                    Save
-                                {/if}
-                            </Button>
-                        </div>
-                        {#if user.username}
-                            <p class="text-xs text-muted-foreground">
-                                Current: <span class="font-medium">{user.username}</span>
-                            </p>
-                        {/if}
-                    </div>
+					<div class="space-y-2">
+						<Label for="username">Username</Label>
+						<div class="flex gap-2">
+							<Input
+								id="username"
+								type="text"
+								placeholder="Enter your username"
+								bind:value={usernameInput}
+								maxlength={32}
+							/>
+							<Button
+								onclick={saveUsername}
+								disabled={isSavingUsername || !usernameInput.trim()}
+							>
+								{#if isSavingUsername}
+									Saving...
+								{:else}
+									Save
+								{/if}
+							</Button>
+						</div>
+						{#if user.username}
+							<p class="text-xs text-muted-foreground">
+								Current: <span class="font-medium">{user.username}</span>
+							</p>
+						{/if}
+					</div>
 
-                    <!-- USDC Transfer Section -->
-                    <div class="rounded-lg border p-4 space-y-3">
-                        <h3 class="font-semibold text-center">Send USDC</h3>
-                        
-                        <div class="space-y-2">
-                            <Label for="recipient">Recipient Address</Label>
-                            <Input
-                                id="recipient"
-                                type="text"
-                                placeholder="0x..."
-                                bind:value={recipient}
-                            />
-                        </div>
-
-                        <div class="space-y-2">
-                            <Label for="amount">Amount (USD)</Label>
-                            <Input
-                                id="amount"
-                                type="text"
-                                placeholder="10.00"
-                                bind:value={amount}
-                            />
-                        </div>
-
-                        <Button 
-                            onclick={handleTransfer} 
-                            class="w-full"
-                            disabled={isSending || !recipient || !amount}
-                        >
-                            {#if isSending}
-                                Sending...
-                            {:else}
-                                Send USDC
-                            {/if}
-                        </Button>
-
-                        {#if txHash}
-                            <div class="text-center text-sm">
-                                <p class="text-green-600">✅ Sent successfully!</p>
-                                <a 
-                                    href="https://arbiscan.io/tx/{txHash}" 
-                                    target="_blank"
-                                    class="text-blue-500 underline break-all"
-                                >
-                                    View transaction
-                                </a>
-                            </div>
-                        {/if}
-                    </div>
-
-                    {#if user.isNewUser}
-                        <p class="text-sm text-center text-muted-foreground">
-                            🎉 Welcome! Your account has been created.
-                        </p>
-                    {/if}
-                    <Button onclick={disconnect} variant="outline" class="w-full">
-                        Disconnect
-                    </Button>
-                </div>
-            {:else}
-                <Button onclick={connectWallet} class="w-full" disabled={isConnecting}>
-                    {#if isConnecting}
-                        Connecting...
-                    {:else}
-                        Connect with MetaMask
-                    {/if}
-                </Button>
-            {/if}
-        </Card.Content>
-        <Card.Footer class="text-center text-sm">
-            <p class="text-muted-foreground w-full">
-                By connecting, you agree to our Terms of Service
-            </p>
-        </Card.Footer>
-    </Card.Root>
+					{#if user.isNewUser}
+						<p class="text-sm text-center text-muted-foreground">
+							🎉 Welcome! Your account has been created.
+						</p>
+					{/if}
+					<a href="/create" class="block">
+						<Button class="w-full">
+							Go to Lobby Creation
+						</Button>
+					</a>
+					<Button onclick={disconnect} variant="outline" class="w-full">
+						Disconnect
+					</Button>
+				</div>
+			{:else}
+				<Button onclick={connectWallet} class="w-full" disabled={isConnecting}>
+					{#if isConnecting}
+						Connecting...
+					{:else}
+						Connect with MetaMask
+					{/if}
+				</Button>
+			{/if}
+		</Card.Content>
+		<Card.Footer class="text-center text-sm">
+			<p class="text-muted-foreground w-full">
+				By connecting, you agree to our Terms of Service
+			</p>
+		</Card.Footer>
+	</Card.Root>
 </div>
