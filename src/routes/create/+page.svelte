@@ -1,32 +1,87 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
-	import { convex, api } from '$lib/convex';
-	import { goto } from '$app/navigation';
+    import { Button } from '$lib/components/ui/button';
+    import * as Card from '$lib/components/ui/card';
+    import { Input } from '$lib/components/ui/input';
+    import { Label } from '$lib/components/ui/label';
+    import { convex, api } from '$lib/convex';
     import { sendUSDC } from '../../convex/buyIn/buyIn';
+    import { connectWagmi, disconnectWagmi } from '../../convex/buyIn/config';
 
     // Hardcoded recipient from environment variable
     const RECIPIENT_ADDRESS = import.meta.env.VITE_RECIPIENT_ADDRESS as `0x${string}`;
 
-	let isCreating = $state(false);
-	let error = $state('');
-	let success = $state('');
-	// Transfer state - no recipient needed anymore
+    let isConnecting = $state(false);
+    let isSavingUsername = $state(false);
+    let error = $state('');
+    let usernameInput = $state('');
+    let user = $state<{
+        walletAddress: string;
+        username?: string;
+        isNewUser: boolean;
+    } | null>(null);
+
+    // Transfer state
     let amount = $state('');
     let isSending = $state(false);
     let txHash = $state('');
 
-	// Form fields
-	let name = $state('');
-	let startDate = $state('');
-	let startTime = $state('');
-	let endDate = $state('');
-	let endTime = $state('');
-	let buyIn = $state('');
+    async function connectWallet() {
+        isConnecting = true;
+        error = '';
 
-	    async function handleTransfer() {
+        try {
+            // Check if MetaMask is installed
+            if (typeof window.ethereum === 'undefined') {
+                throw new Error('Please install MetaMask to connect your wallet');
+            }
+
+            // Connect through wagmi FIRST (this is the fix!)
+            const wagmiResult = await connectWagmi();
+            console.log('Wagmi connected:', wagmiResult);
+
+            const walletAddress = wagmiResult.accounts[0];
+
+            // Login with Convex
+            const result = await convex.mutation(api.auth.loginWithWallet, {
+                walletAddress
+            });
+
+            user = result;
+            usernameInput = result.username ?? '';
+            console.log('Logged in:', result);
+
+            localStorage.setItem('walletAddress', walletAddress);
+        } catch (err) {
+            error = err instanceof Error ? err.message : 'Failed to connect wallet';
+            console.error('Login error:', err);
+        } finally {
+            isConnecting = false;
+        }
+    }
+
+    async function saveUsername() {
+        if (!user || !usernameInput.trim()) return;
+
+        isSavingUsername = true;
+        error = '';
+
+        try {
+            await convex.mutation(api.auth.updateUsername, {
+                walletAddress: user.walletAddress,
+                username: usernameInput.trim()
+            });
+
+            user = { ...user, username: usernameInput.trim() };
+            console.log('Username saved:', usernameInput);
+        } catch (err) {
+            error = err instanceof Error ? err.message : 'Failed to save username';
+            console.error('Save username error:', err);
+        } finally {
+            isSavingUsername = false;
+        }
+    }
+
+    async function handleTransfer() {
         if (!amount) {
             error = 'Please enter amount';
             return;
@@ -53,155 +108,150 @@
         }
     }
 
-	async function createLobby() {
-		error = '';
-		success = '';
+    async function disconnect() {
+        await disconnectWagmi();  // Disconnect wagmi too
+        user = null;
+        usernameInput = '';
+        amount = '';
+        txHash = '';
+        localStorage.removeItem('walletAddress');
+    }
 
-		// Validate fields
-		if (!name.trim()) {
-			error = 'Please enter a lobby name';
-			return;
-		}
-		if (!startDate || !startTime) {
-			error = 'Please select a start date and time';
-			return;
-		}
-		if (!endDate || !endTime) {
-			error = 'Please select an end date and time';
-			return;
-		}
-		if (!buyIn || parseFloat(buyIn) <= 0) {
-			error = 'Please enter a valid buy-in amount';
-			return;
-		}
-
-		const walletAddress = localStorage.getItem('walletAddress');
-		if (!walletAddress) {
-			error = 'Please connect your wallet first';
-			return;
-		}
-
-		// Convert to timestamps
-		const startTimestamp = new Date(`${startDate}T${startTime}`).getTime();
-		const endTimestamp = new Date(`${endDate}T${endTime}`).getTime();
-
-		if (endTimestamp <= startTimestamp) {
-			error = 'End time must be after start time';
-			return;
-		}
-
-		isCreating = true;
-
-		try {
-			const result = await convex.mutation(api.lobby.createLobby, {
-				name: name.trim(),
-				walletAddress,
-				startTime: startTimestamp,
-				endTime: endTimestamp,
-				buyIn: parseFloat(buyIn),
-			});
-
-			success = `Lobby "${result.name}" created successfully!`;
-			console.log('Lobby created:', result);
-
-			// Reset form
-			name = '';
-			startDate = '';
-			startTime = '';
-			endDate = '';
-			endTime = '';
-			buyIn = '';
-
-			// Optionally redirect after a delay
-			setTimeout(() => {
-				goto('/');
-			}, 1500);
-		} catch (err) {
-			// Extract clean error message from Convex error
-			if (err instanceof Error) {
-				const match = err.message.match(/Error: ([^]+?)(?:\s+at\s+|$)/);
-				error = match ? match[1].trim() : err.message;
-			} else {
-				error = 'Failed to create lobby';
-			}
-			console.error('Create lobby error:', err);
-		} finally {
-			isCreating = false;
-		}
-	}
+    // Check for existing session on mount
+    $effect(() => {
+        const savedWallet = localStorage.getItem('walletAddress');
+        if (savedWallet) {
+            // Reconnect wagmi on page reload
+            connectWagmi().catch(console.error);
+            
+            convex.query(api.auth.getUserByWallet, { walletAddress: savedWallet }).then((result) => {
+                if (result) {
+                    user = {
+                        walletAddress: result.walletAddress,
+                        username: result.username,
+                        isNewUser: false
+                    };
+                    usernameInput = result.username ?? '';
+                }
+            });
+        }
+    });
 </script>
 
+<!-- Rest of your HTML stays the same -->
 <div class="flex min-h-screen items-center justify-center bg-background p-4">
-	<Card.Root class="w-full max-w-md">
-		<Card.Header class="space-y-1 text-center">
-			<Card.Title class="text-2xl font-bold">Create Lobby</Card.Title>
-			<Card.Description>Start a new trading competition</Card.Description>
-		</Card.Header>
-		<Card.Content class="space-y-4">
-			{#if error}
-				<p class="text-sm text-destructive text-center">{error}</p>
-			{/if}
-			{#if success}
-				<p class="text-sm text-green-600 text-center">{success}</p>
-			{/if}
+    <Card.Root class="w-full max-w-md">
+        <Card.Header class="space-y-1 text-center">
+            <Card.Title class="text-2xl font-bold">
+                {user ? 'Welcome!' : 'Connect Wallet'}
+            </Card.Title>
+            <Card.Description>
+                {user
+                    ? `Connected as ${user.walletAddress.slice(0, 6)}...${user.walletAddress.slice(-4)}`
+                    : 'Connect your wallet to get started'}
+            </Card.Description>
+        </Card.Header>
+        <Card.Content class="space-y-4">
+            {#if error}
+                <p class="text-sm text-destructive text-center">{error}</p>
+            {/if}
 
-			<div class="space-y-2">
-				<Label for="name">Lobby Name</Label>
-				<Input
-					id="name"
-					type="text"
-					placeholder="Enter lobby name"
-					bind:value={name}
-					maxlength={50}
-				/>
-			</div>
+            {#if user}
+                <div class="space-y-4">
+                    <div class="rounded-lg border p-4 text-center">
+                        <p class="text-sm text-muted-foreground">Wallet Address</p>
+                        <p class="font-mono text-sm break-all">{user.walletAddress}</p>
+                    </div>
 
-			<div class="grid grid-cols-2 gap-4">
-				<div class="space-y-2">
-					<Label for="startDate">Start Date</Label>
-					<Input id="startDate" type="date" bind:value={startDate} />
-				</div>
-				<div class="space-y-2">
-					<Label for="startTime">Start Time</Label>
-					<Input id="startTime" type="time" bind:value={startTime} />
-				</div>
-			</div>
+                    <div class="space-y-2">
+                        <Label for="username">Username</Label>
+                        <div class="flex gap-2">
+                            <Input
+                                id="username"
+                                type="text"
+                                placeholder="Enter your username"
+                                bind:value={usernameInput}
+                                maxlength={32}
+                            />
+                            <Button
+                                onclick={saveUsername}
+                                disabled={isSavingUsername || !usernameInput.trim()}
+                            >
+                                {#if isSavingUsername}
+                                    Saving...
+                                {:else}
+                                    Save
+                                {/if}
+                            </Button>
+                        </div>
+                        {#if user.username}
+                            <p class="text-xs text-muted-foreground">
+                                Current: <span class="font-medium">{user.username}</span>
+                            </p>
+                        {/if}
+                    </div>
 
-			<div class="grid grid-cols-2 gap-4">
-				<div class="space-y-2">
-					<Label for="endDate">End Date</Label>
-					<Input id="endDate" type="date" bind:value={endDate} />
-				</div>
-				<div class="space-y-2">
-					<Label for="endTime">End Time</Label>
-					<Input id="endTime" type="time" bind:value={endTime} />
-				</div>
-			</div>
+                    <!-- USDC Transfer Section -->
+                    <div class="rounded-lg border p-4 space-y-3">
+                        <h3 class="font-semibold text-center">Buy In</h3>
 
-			<div class="space-y-2">
-				<Label for="buyIn">Buy-in Amount (USD)</Label>
-				<Input
-					id="buyIn"
-					type="number"
-					placeholder="0.00"
-					bind:value={buyIn}
-					min="0"
-					step="0.01"
-				/>
-			</div>
+                        <div class="space-y-2">
+                            <Label for="amount">Amount (USDC)</Label>
+                            <Input
+                                id="amount"
+                                type="text"
+                                placeholder="10.00"
+                                bind:value={amount}
+                            />
+                        </div>
 
-			<Button onclick={createLobby} class="w-full" disabled={isCreating}>
-				{#if isCreating}
-					Creating...
-				{:else}
-					Create Lobby
-				{/if}
-			</Button>
-		</Card.Content>
-		<Card.Footer class="text-center text-sm">
-			<a href="/" class="text-muted-foreground hover:underline w-full block">
-				← Back to Home
-			</a>
-		</Card.Footer>
-	</Card.Root>
+                        <Button
+                            onclick={handleTransfer}
+                            class="w-full"
+                            disabled={isSending || !amount}
+                        >
+                            {#if isSending}
+                                Sending...
+                            {:else}
+                                Send USDC
+                            {/if}
+                        </Button>
+
+                        {#if txHash}
+                            <div class="text-center text-sm">
+                                <p class="text-green-600">✅ Sent successfully!</p>
+                                <a
+                                    href="https://arbiscan.io/tx/{txHash}"
+                                    target="_blank"
+                                    class="text-blue-500 underline break-all"
+                                >
+                                    View transaction
+                                </a>
+                            </div>
+                        {/if}
+                    </div>
+
+                    <a href="/create" class="block">
+                        <Button class="w-full">Go to Lobby Creation</Button>
+                    </a>
+                    <Button onclick={disconnect} variant="outline" class="w-full">
+                        Disconnect
+                    </Button>
+                </div>
+            {:else}
+                <Button onclick={connectWallet} class="w-full" disabled={isConnecting}>
+                    {#if isConnecting}
+                        Connecting...
+                    {:else}
+                        Connect with MetaMask
+                    {/if}
+                </Button>
+            {/if}
+        </Card.Content>
+        <Card.Footer class="text-center text-sm">
+            <p class="text-muted-foreground w-full">
+                By connecting, you agree to our Terms of Service
+            </p>
+        </Card.Footer>
+    </Card.Root>
 </div>
