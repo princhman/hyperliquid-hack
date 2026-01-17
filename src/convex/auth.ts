@@ -2,9 +2,9 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 
 /**
- * Get or create a user by wallet address
+ * Login or register user by wallet address
  */
-export const getOrCreateUser = mutation({
+export const loginWithWallet = mutation({
   args: {
     walletAddress: v.string(),
   },
@@ -18,95 +18,38 @@ export const getOrCreateUser = mutation({
       .first();
 
     if (existingUser) {
-      return existingUser._id;
+      // Update last login time
+      await ctx.db.patch(existingUser._id, {
+        lastLoginAt: Date.now(),
+      });
+      return {
+        walletAddress: existingUser.walletAddress,
+        username: existingUser.username,
+        isNewUser: false,
+      };
     }
 
     // Create new user
     const userId = await ctx.db.insert("users", {
       walletAddress,
       createdAt: Date.now(),
+      lastLoginAt: Date.now(),
     });
 
-    return userId;
+    return {
+      walletAddress,
+      username: undefined,
+      isNewUser: true,
+    };
   },
 });
 
 /**
- * Store Pear Protocol tokens after successful authentication
+ * Update wallet status
  */
-export const storePearTokens = mutation({
+export const updateWalletStatus = mutation({
   args: {
     walletAddress: v.string(),
-    accessToken: v.string(),
-    refreshToken: v.string(),
-    expiresIn: v.number(), // seconds until expiry
-  },
-  handler: async (ctx, args) => {
-    const walletAddress = args.walletAddress.toLowerCase();
-
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_wallet", (q) => q.eq("walletAddress", walletAddress))
-      .first();
-
-    if (!user) {
-      throw new Error("User not found");
-    }
-
-    // Calculate expiry timestamp (expiresIn is in seconds)
-    const expiresAt = Date.now() + args.expiresIn * 1000;
-
-    await ctx.db.patch(user._id, {
-      pearAccessToken: args.accessToken,
-      pearRefreshToken: args.refreshToken,
-      pearTokenExpiresAt: expiresAt,
-    });
-
-    return { success: true };
-  },
-});
-
-/**
- * Update tokens after refresh
- */
-export const refreshPearTokens = mutation({
-  args: {
-    walletAddress: v.string(),
-    accessToken: v.string(),
-    refreshToken: v.string(),
-    expiresIn: v.number(),
-  },
-  handler: async (ctx, args) => {
-    const walletAddress = args.walletAddress.toLowerCase();
-
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_wallet", (q) => q.eq("walletAddress", walletAddress))
-      .first();
-
-    if (!user) {
-      throw new Error("User not found");
-    }
-
-    const expiresAt = Date.now() + args.expiresIn * 1000;
-
-    await ctx.db.patch(user._id, {
-      pearAccessToken: args.accessToken,
-      pearRefreshToken: args.refreshToken,
-      pearTokenExpiresAt: expiresAt,
-    });
-
-    return { success: true };
-  },
-});
-
-/**
- * Store agent wallet info
- */
-export const storeAgentWallet = mutation({
-  args: {
-    walletAddress: v.string(),
-    agentWalletAddress: v.string(),
     status: v.union(
       v.literal("ACTIVE"),
       v.literal("EXPIRED"),
@@ -126,8 +69,7 @@ export const storeAgentWallet = mutation({
     }
 
     await ctx.db.patch(user._id, {
-      agentWalletAddress: args.agentWalletAddress,
-      agentWalletStatus: args.status,
+      walletStatus: args.status,
     });
 
     return { success: true };
@@ -153,26 +95,20 @@ export const getUserByWallet = query({
       return null;
     }
 
-    // Check if token is expired
-    const isTokenExpired =
-      !user.pearTokenExpiresAt || user.pearTokenExpiresAt < Date.now();
-
     return {
-      id: user._id,
       walletAddress: user.walletAddress,
       username: user.username,
-      isAuthenticated: !!user.pearAccessToken && !isTokenExpired,
-      needsTokenRefresh: !!user.pearRefreshToken && isTokenExpired,
-      agentWalletStatus: user.agentWalletStatus ?? "NOT_FOUND",
-      agentWalletAddress: user.agentWalletAddress,
+      createdAt: user.createdAt,
+      lastLoginAt: user.lastLoginAt,
+      walletStatus: user.walletStatus ?? "NOT_FOUND",
     };
   },
 });
 
 /**
- * Get stored tokens for API calls (only use server-side)
+ * Check if user exists (for session validation)
  */
-export const getPearTokens = query({
+export const checkSession = query({
   args: {
     walletAddress: v.string(),
   },
@@ -183,30 +119,33 @@ export const getPearTokens = query({
       .query("users")
       .withIndex("by_wallet", (q) => q.eq("walletAddress", walletAddress))
       .first();
-
-    if (!user) {
-      return null;
-    }
 
     return {
-      accessToken: user.pearAccessToken,
-      refreshToken: user.pearRefreshToken,
-      expiresAt: user.pearTokenExpiresAt,
-      isExpired:
-        !user.pearTokenExpiresAt || user.pearTokenExpiresAt < Date.now(),
+      isLoggedIn: !!user,
+      walletAddress: user?.walletAddress ?? null,
     };
   },
 });
 
 /**
- * Clear tokens on logout
+ * Update username for a user
  */
-export const logout = mutation({
+export const updateUsername = mutation({
   args: {
     walletAddress: v.string(),
+    username: v.string(),
   },
   handler: async (ctx, args) => {
     const walletAddress = args.walletAddress.toLowerCase();
+    const username = args.username.trim();
+
+    if (!username || username.length < 1) {
+      throw new Error("Username cannot be empty");
+    }
+
+    if (username.length > 32) {
+      throw new Error("Username must be 32 characters or less");
+    }
 
     const user = await ctx.db
       .query("users")
@@ -214,15 +153,13 @@ export const logout = mutation({
       .first();
 
     if (!user) {
-      return { success: false };
+      throw new Error("User not found");
     }
 
     await ctx.db.patch(user._id, {
-      pearAccessToken: undefined,
-      pearRefreshToken: undefined,
-      pearTokenExpiresAt: undefined,
+      username,
     });
 
-    return { success: true };
+    return { success: true, username };
   },
 });

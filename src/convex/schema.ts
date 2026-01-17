@@ -6,6 +6,14 @@ export default defineSchema({
     walletAddress: v.string(),
     username: v.optional(v.string()),
     createdAt: v.number(),
+    lastLoginAt: v.optional(v.number()),
+    walletStatus: v.optional(
+      v.union(
+        v.literal("ACTIVE"),
+        v.literal("EXPIRED"),
+        v.literal("NOT_FOUND")
+      )
+    ),
   }).index("by_wallet", ["walletAddress"]),
 
   lobby: defineTable({
