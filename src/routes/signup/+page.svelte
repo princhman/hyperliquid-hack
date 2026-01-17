@@ -4,6 +4,7 @@
 	import { Input } from "$lib/components/ui/input";
 	import { Label } from "$lib/components/ui/label";
 	import { goto } from '$app/navigation';
+	import pearPoolLogo from "$lib/assets/logo-no-bg.jpg";
 
 	let name = $state('');
 	let email = $state('');
@@ -42,11 +43,23 @@
 	}
 </script>
 
-<div class="min-h-screen bg-background flex items-center justify-center p-4">
+<div class="min-h-screen bg-background flex flex-col">
+	<header class="border-b">
+		<div class="container mx-auto px-4 py-4 flex items-center justify-between">
+			<div class="flex items-center">
+				<img src={pearPoolLogo} alt="Pear Pool Logo" class="h-12 w-12 mr-3 object-contain" />
+				<h1 class="text-2xl font-bold leading-none">
+					<a href="/">Pear Pool</a>
+				</h1>
+			</div>
+			<nav class="flex gap-4">
+				<Button variant="ghost" href="/">Back to Login</Button>
+			</nav>
+		</div>
+	</header>
+
+	<main class="flex-1 flex items-center justify-center p-4">
 	<div class="w-full max-w-md space-y-4">
-		<Button variant="ghost" href="/" class="gap-2">
-			← Back to Login
-		</Button>
 		
 		<Card.Root>
 			<Card.Header>
@@ -104,4 +117,5 @@
 			</Card.Footer>
 		</Card.Root>
 	</div>
+	</main>
 </div>

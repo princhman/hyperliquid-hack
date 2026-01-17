@@ -4,6 +4,7 @@
 	import { Input } from "$lib/components/ui/input";
 	import { Label } from "$lib/components/ui/label";
 	import { goto } from '$app/navigation';
+	import pearPoolLogo from "$lib/assets/logo-no-bg.jpg";
 	import { convex, api } from "$lib/convex";
 	import { onMount } from "svelte";
 
@@ -134,9 +135,12 @@
 <div class="min-h-screen bg-background flex flex-col">
 	<header class="border-b">
 		<div class="container mx-auto px-4 py-4 flex items-center justify-between">
-			<h1 class="text-2xl font-bold">
-				<a href="/">Pear Pool</a>
-			</h1>
+			<div class="flex items-center">
+				<img src={pearPoolLogo} alt="Pear Pool Logo" class="h-12 w-12 mr-3 object-contain" />
+				<h1 class="text-2xl font-bold leading-none">
+					<a href="/">Pear Pool</a>
+				</h1>
+			</div>
 			<nav class="flex gap-4">
 				<Button variant="ghost" href="/lobby">Back to Lobby</Button>
 				<Button variant="outline" onclick={handleLogout}>Logout</Button>
