@@ -84,7 +84,6 @@
 		} catch (err) {
 			// Extract clean error message from Convex error
 			if (err instanceof Error) {
-				// Convex errors often have format: "[CONVEX ...] Server Error Uncaught Error: <message>"
 				const match = err.message.match(/Error: ([^]+?)(?:\s+at\s+|$)/);
 				error = match ? match[1].trim() : err.message;
 			} else {
