@@ -9,6 +9,22 @@
 	import { goto } from "$app/navigation";
 	import type { Id } from "../../convex/_generated/dataModel";
 
+	// Pear Protocol API for fetching available assets
+	const PEAR_API = "https://hl-v2.pearprotocol.io";
+
+	interface PearAsset {
+		asset: string;
+		weight: number;
+	}
+
+	interface PearMarket {
+		key: string;
+		longAssets: PearAsset[];
+		shortAssets: PearAsset[];
+		ratio: string;
+		change24h: string;
+	}
+
 	// State
 	let walletAddress = $state<string | null>(null);
 	let games = $state<any[]>([]);
@@ -19,6 +35,10 @@
 	let isJoining = $state<string | null>(null);
 	let error = $state<string | null>(null);
 
+	// Available coins from Pear Protocol
+	let availableCoins = $state<string[]>([]);
+	let isLoadingCoins = $state(false);
+
 	// Create game form
 	let gameName = $state("");
 	let gameDescription = $state("");
@@ -26,18 +46,98 @@
 	let startingCapital = $state(10000);
 	let prizePool = $state(1000);
 	let durationMinutes = $state(60);
-	let selectedPairs = $state<string[]>(["BTC-PERP", "ETH-PERP"]);
+	
+	// Long/Short pair selection
+	let selectedLongs = $state<string[]>([]);
+	let selectedShorts = $state<string[]>([]);
+	let longSearchInput = $state("");
+	let shortSearchInput = $state("");
+	let showLongDropdown = $state(false);
+	let showShortDropdown = $state(false);
 
-	const availablePairs = [
-		"BTC-PERP",
-		"ETH-PERP",
-		"SOL-PERP",
-		"AVAX-PERP",
-		"ARB-PERP",
-		"OP-PERP",
-		"MATIC-PERP",
-		"LINK-PERP",
-	];
+	// Build pair key in Pear format
+	let pairKey = $derived(() => {
+		if (selectedLongs.length === 0 && selectedShorts.length === 0) return "";
+		
+		const parts: string[] = [];
+		if (selectedLongs.length > 0) {
+			parts.push(`L:${selectedLongs.join(",")}`);
+		}
+		if (selectedShorts.length > 0) {
+			parts.push(`S:${selectedShorts.join(",")}`);
+		}
+		return parts.join("|");
+	});
+
+	// Filtered coins based on search for longs
+	let filteredLongCoins = $derived(
+		longSearchInput.trim() 
+			? availableCoins
+				.filter(coin => 
+					coin.toUpperCase().includes(longSearchInput.toUpperCase()) && 
+					!selectedLongs.includes(coin)
+				)
+				.slice(0, 10)
+			: []
+	);
+
+	// Filtered coins based on search for shorts
+	let filteredShortCoins = $derived(
+		shortSearchInput.trim() 
+			? availableCoins
+				.filter(coin => 
+					coin.toUpperCase().includes(shortSearchInput.toUpperCase()) && 
+					!selectedShorts.includes(coin)
+				)
+				.slice(0, 10)
+			: []
+	);
+
+	async function fetchAvailableCoins() {
+		isLoadingCoins = true;
+		try {
+			// Fetch from Pear Protocol markets/active endpoint
+			const response = await fetch(`${PEAR_API}/markets/active`);
+			if (!response.ok) throw new Error("Failed to fetch from Pear");
+			const data = await response.json();
+			
+			// Extract unique assets from all markets (long and short sides)
+			const assetSet = new Set<string>();
+			const allMarkets = [
+				...(data.active || []),
+				...(data.topGainers || []),
+				...(data.topLosers || []),
+			];
+			
+			allMarkets.forEach((market: PearMarket) => {
+				market.longAssets?.forEach((a: PearAsset) => {
+					// Filter out prefixed assets (xyz:, flx:, km:, vntl:, hyna:)
+					if (!a.asset.includes(":")) {
+						assetSet.add(a.asset);
+					}
+				});
+				market.shortAssets?.forEach((a: PearAsset) => {
+					if (!a.asset.includes(":")) {
+						assetSet.add(a.asset);
+					}
+				});
+			});
+			
+			const coins = Array.from(assetSet).sort();
+			availableCoins = coins;
+			console.log(`Loaded ${coins.length} available coins from Pear Protocol`);
+		} catch (err) {
+			console.error("Failed to fetch from Pear Protocol:", err);
+			// Fallback to popular coins if API fails
+			availableCoins = [
+				"BTC", "ETH", "SOL", "AVAX", "ARB", "OP", "HYPE", "LINK",
+				"DOGE", "XRP", "ADA", "DOT", "ATOM", "UNI", "APT", "SUI",
+				"AAVE", "PENGU", "TAO", "VIRTUAL", "FARTCOIN", "LIT", "ASTER"
+			];
+		} finally {
+			isLoadingCoins = false;
+		}
+	}
 
 	onMount(async () => {
 		walletAddress = localStorage.getItem("walletAddress");
@@ -45,7 +145,8 @@
 			goto("/");
 			return;
 		}
-		await loadGames();
+		// Fetch games and available coins in parallel
+		await Promise.all([loadGames(), fetchAvailableCoins()]);
 	});
 
 	async function loadGames() {
@@ -79,7 +180,7 @@
 				startingCapital,
 				prizePool,
 				durationMinutes,
-				tradingPairs: selectedPairs,
+				tradingPairs: [pairKey()], // Single pair in Pear format: "L:BTC|S:ETH"
 			});
 			showCreateModal = false;
 			resetForm();
@@ -146,15 +247,56 @@
 		startingCapital = 10000;
 		prizePool = 1000;
 		durationMinutes = 60;
-		selectedPairs = ["BTC-PERP", "ETH-PERP"];
+		selectedLongs = [];
+		selectedShorts = [];
+		longSearchInput = "";
+		shortSearchInput = "";
+		showLongDropdown = false;
+		showShortDropdown = false;
 	}
 
-	function togglePair(pair: string) {
-		if (selectedPairs.includes(pair)) {
-			selectedPairs = selectedPairs.filter((p) => p !== pair);
-		} else {
-			selectedPairs = [...selectedPairs, pair];
+	function selectLong(coin: string) {
+		if (!selectedLongs.includes(coin)) {
+			selectedLongs = [...selectedLongs, coin];
 		}
+		longSearchInput = "";
+		showLongDropdown = false;
+	}
+
+	function removeLong(coin: string) {
+		selectedLongs = selectedLongs.filter((c) => c !== coin);
+	}
+
+	function selectShort(coin: string) {
+		if (!selectedShorts.includes(coin)) {
+			selectedShorts = [...selectedShorts, coin];
+		}
+		shortSearchInput = "";
+		showShortDropdown = false;
+	}
+
+	function removeShort(coin: string) {
+		selectedShorts = selectedShorts.filter((c) => c !== coin);
+	}
+
+	// Format pair for display
+	function formatPairDisplay(pairKey: string): string {
+		if (!pairKey) return "No pair";
+		// Parse "L:BTC,ETH|S:SOL" format
+		const parts = pairKey.split("|");
+		const longPart = parts.find(p => p.startsWith("L:"));
+		const shortPart = parts.find(p => p.startsWith("S:"));
+		
+		const longs = longPart ? longPart.replace("L:", "").split(",") : [];
+		const shorts = shortPart ? shortPart.replace("S:", "").split(",") : [];
+		
+		if (longs.length === 0 && shorts.length > 0) {
+			return `📉 ${shorts.join("+")} (Short)`;
+		}
+		if (shorts.length === 0) {
+			return `📈 ${longs.join("+")}`;
+		}
+		return `📈 ${longs.join("+")} / 📉 ${shorts.join("+")}`;
 	}
 
 	function formatDuration(minutes: number): string {
@@ -323,12 +465,12 @@
 											>
 										</div>
 										<div class="mt-2">
-											<span class="text-muted-foreground text-xs">Trading Pairs:</span>
+											<span class="text-muted-foreground text-xs">Trading Pair:</span>
 											<div class="flex flex-wrap gap-1 mt-1">
 												{#each game.tradingPairs as pair}
 													<span
-														class="px-2 py-0.5 bg-muted text-xs rounded-full"
-														>{pair}</span
+														class="px-2 py-0.5 bg-muted text-xs rounded-full font-medium"
+														>{formatPairDisplay(pair)}</span
 													>
 												{/each}
 											</div>
@@ -467,25 +609,163 @@
 							</div>
 						</div>
 
-						<div class="space-y-2">
-							<Label>Trading Pairs</Label>
-							<div class="flex flex-wrap gap-2">
-								{#each availablePairs as pair}
-									<button
-										type="button"
-										class="px-3 py-1.5 text-sm rounded-full border transition-colors {selectedPairs.includes(
-											pair
-										)
-											? 'bg-primary text-primary-foreground border-primary'
-											: 'bg-background hover:bg-muted'}"
-										onclick={() => togglePair(pair)}
-									>
-										{pair}
-									</button>
-								{/each}
+						<div class="space-y-4">
+							<Label class="text-base font-semibold">Trading Pair</Label>
+							<p class="text-xs text-muted-foreground -mt-2">Create a pair by selecting Long (bullish) and optionally Short (bearish) assets</p>
+							
+							<!-- LONG Selection -->
+							<div class="space-y-2 p-3 border border-green-500/30 rounded-lg bg-green-500/5">
+								<Label class="text-green-500 flex items-center gap-1">
+									📈 Long (Bullish)
+									<span class="text-xs text-muted-foreground font-normal">- Optional</span>
+								</Label>
+								
+								<!-- Selected longs -->
+								<div class="flex flex-wrap gap-2 min-h-[36px]">
+									{#if selectedLongs.length === 0}
+										<span class="text-muted-foreground text-sm">Select asset(s) you're bullish on</span>
+									{/if}
+									{#each selectedLongs as coin}
+										<span class="inline-flex items-center gap-1 px-2 py-1 text-sm bg-green-500 text-white rounded-full">
+											{coin}
+											<button
+												type="button"
+												class="hover:bg-white/20 rounded-full p-0.5"
+												onclick={() => removeLong(coin)}
+												aria-label="Remove {coin}"
+											>
+												<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+													<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+												</svg>
+											</button>
+										</span>
+									{/each}
+								</div>
+
+								<!-- Long search -->
+								<div class="relative">
+									<Input
+										placeholder={isLoadingCoins ? "Loading..." : "Search (e.g., BTC, ETH...)"}
+										bind:value={longSearchInput}
+										onfocus={() => (showLongDropdown = true)}
+										onblur={() => setTimeout(() => (showLongDropdown = false), 200)}
+										disabled={isLoadingCoins}
+										class="border-green-500/30"
+									/>
+									{#if showLongDropdown && filteredLongCoins.length > 0}
+										<div class="absolute z-10 w-full mt-1 bg-background border rounded-lg shadow-lg max-h-40 overflow-y-auto">
+											{#each filteredLongCoins as coin}
+												<button
+													type="button"
+													class="w-full px-3 py-2 text-left hover:bg-green-500/10 transition-colors"
+													onmousedown={() => selectLong(coin)}
+												>
+													<span class="font-medium">{coin}</span>
+												</button>
+											{/each}
+										</div>
+									{/if}
+								</div>
+
+								<!-- Quick picks -->
+								<div class="flex flex-wrap gap-1">
+									{#each availableCoins.filter(c => !selectedLongs.includes(c)).slice(0, 12) as coin}
+										<button
+											type="button"
+											class="px-2 py-0.5 text-xs rounded border border-green-500/30 hover:bg-green-500/20 transition-colors"
+											onclick={() => selectLong(coin)}
+										>
+											+ {coin}
+										</button>
+									{/each}
+								</div>
 							</div>
-							{#if selectedPairs.length === 0}
-								<p class="text-sm text-red-500">Select at least one trading pair</p>
+
+							<!-- SHORT Selection -->
+							<div class="space-y-2 p-3 border border-red-500/30 rounded-lg bg-red-500/5">
+								<Label class="text-red-500 flex items-center gap-1">
+									📉 Short (Bearish)
+									<span class="text-xs text-muted-foreground font-normal">- Optional (for pair trades)</span>
+								</Label>
+								
+								<!-- Selected shorts -->
+								<div class="flex flex-wrap gap-2 min-h-[36px]">
+									{#if selectedShorts.length === 0}
+										<span class="text-muted-foreground text-sm">Optional: Select asset(s) you're bearish on</span>
+									{/if}
+									{#each selectedShorts as coin}
+										<span class="inline-flex items-center gap-1 px-2 py-1 text-sm bg-red-500 text-white rounded-full">
+											{coin}
+											<button
+												type="button"
+												class="hover:bg-white/20 rounded-full p-0.5"
+												onclick={() => removeShort(coin)}
+												aria-label="Remove {coin}"
+											>
+												<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+													<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+												</svg>
+											</button>
+										</span>
+									{/each}
+								</div>
+
+								<!-- Short search -->
+								<div class="relative">
+									<Input
+										placeholder={isLoadingCoins ? "Loading..." : "Search (e.g., SOL, DOGE...)"}
+										bind:value={shortSearchInput}
+										onfocus={() => (showShortDropdown = true)}
+										onblur={() => setTimeout(() => (showShortDropdown = false), 200)}
+										disabled={isLoadingCoins}
+										class="border-red-500/30"
+									/>
+									{#if showShortDropdown && filteredShortCoins.length > 0}
+										<div class="absolute z-10 w-full mt-1 bg-background border rounded-lg shadow-lg max-h-40 overflow-y-auto">
+											{#each filteredShortCoins as coin}
+												<button
+													type="button"
+													class="w-full px-3 py-2 text-left hover:bg-red-500/10 transition-colors"
+													onmousedown={() => selectShort(coin)}
+												>
+													<span class="font-medium">{coin}</span>
+												</button>
+											{/each}
+										</div>
+									{/if}
+								</div>
+
+								<!-- Quick picks -->
+								<div class="flex flex-wrap gap-1">
+									{#each availableCoins.filter(c => !selectedShorts.includes(c) && !selectedLongs.includes(c)).slice(0, 12) as coin}
+										<button
+											type="button"
+											class="px-2 py-0.5 text-xs rounded border border-red-500/30 hover:bg-red-500/20 transition-colors"
+											onclick={() => selectShort(coin)}
+										>
+											+ {coin}
+										</button>
+									{/each}
+								</div>
+							</div>
+
+							<!-- Pair Preview -->
+							{#if selectedLongs.length > 0 || selectedShorts.length > 0}
+								<div class="p-3 bg-muted/50 rounded-lg">
+									<p class="text-sm font-medium">Pair Preview:</p>
+									<p class="text-lg font-bold mt-1">{formatPairDisplay(pairKey())}</p>
+									<p class="text-xs text-muted-foreground mt-1">
+										{#if selectedLongs.length > 0 && selectedShorts.length > 0}
+											Chart will show ratio: {selectedLongs.join("+")} / {selectedShorts.join("+")}
+										{:else if selectedLongs.length > 0}
+											Chart will show {selectedLongs.join("+")} price
+										{:else}
+											Chart will show {selectedShorts.join("+")} price (inverted for short)
+										{/if}
+									</p>
+								</div>
+							{:else}
+								<p class="text-sm text-red-500">Select at least one Long or Short asset</p>
 							{/if}
 						</div>
 
@@ -501,7 +781,7 @@
 							<Button
 								type="submit"
 								class="flex-1"
-								disabled={isCreating || !gameName.trim() || selectedPairs.length === 0}
+								disabled={isCreating || !gameName.trim() || (selectedLongs.length === 0 && selectedShorts.length === 0)}
 							>
 								{isCreating ? "Creating..." : "Create Game"}
 							</Button>

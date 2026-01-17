@@ -25,19 +25,40 @@
 		n: number; // number of trades
 	}
 
-	async function fetchCandles(coin: string, interval: string = "15m"): Promise<Candle[]> {
-		// Extract base coin from formats like "BTC-PERP", "SOL-PERP", "BTC/ETH", etc.
-		let baseCoin = coin;
-		// Handle "BTC-PERP" format
-		if (baseCoin.includes("-")) {
-			baseCoin = baseCoin.split("-")[0];
-		}
-		// Handle "BTC/ETH" format
-		if (baseCoin.includes("/")) {
-			baseCoin = baseCoin.split("/")[0];
-		}
+	interface ParsedPair {
+		longs: string[];
+		shorts: string[];
+	}
+
+	// Parse pair key like "L:BTC,ETH|S:SOL" into components
+	function parsePairKey(pairKey: string): ParsedPair {
+		const parts = pairKey.split("|");
+		const longPart = parts.find(p => p.startsWith("L:"));
+		const shortPart = parts.find(p => p.startsWith("S:"));
 		
-		console.log(`Fetching candles for ${baseCoin} with interval ${interval}`);
+		return {
+			longs: longPart ? longPart.replace("L:", "").split(",") : [],
+			shorts: shortPart ? shortPart.replace("S:", "").split(",") : []
+		};
+	}
+
+	// Format pair for display
+	function formatPairDisplay(pairKey: string): string {
+		const { longs, shorts } = parsePairKey(pairKey);
+		if (longs.length === 0 && shorts.length > 0) {
+			return `📉 ${shorts.join("+")} (Short)`;
+		}
+		if (shorts.length === 0) {
+			return `📈 ${longs.join("+")}`;
+		}
+		return `📈 ${longs.join("+")} / 📉 ${shorts.join("+")}`;
+	}
+
+	async function fetchSingleCoinCandles(coin: string, interval: string = "15m", hoursBack: number = 24): Promise<Candle[]> {
+		// Clean coin name
+		let baseCoin = coin.trim();
+		if (baseCoin.includes("-")) baseCoin = baseCoin.split("-")[0];
+		if (baseCoin.includes("/")) baseCoin = baseCoin.split("/")[0];
 		
 		const response = await fetch(HL_API, {
 			method: "POST",
@@ -47,21 +68,102 @@
 				req: {
 					coin: baseCoin,
 					interval,
-					startTime: Date.now() - 24 * 60 * 60 * 1000, // Last 24 hours
+					startTime: Date.now() - hoursBack * 60 * 60 * 1000,
 					endTime: Date.now(),
 				},
 			}),
 		});
 		
-		if (!response.ok) {
-			const errorText = await response.text();
-			console.error("Hyperliquid API error:", errorText);
-			throw new Error("Failed to fetch candles");
-		}
+		if (!response.ok) throw new Error(`Failed to fetch ${baseCoin}`);
+		return await response.json();
+	}
+
+	// Fetch and calculate ratio candles for pairs
+	async function fetchPairCandles(pairKey: string, interval: string = "15m", hoursBack: number = 24): Promise<Candle[]> {
+		const { longs, shorts } = parsePairKey(pairKey);
 		
-		const data = await response.json();
-		console.log(`Received ${data.length} candles`);
-		return data;
+		if (longs.length === 0 && shorts.length === 0) {
+			throw new Error("No assets in pair");
+		}
+
+		// If only shorts (no longs), return the first short's candles
+		if (longs.length === 0 && shorts.length > 0) {
+			return await fetchSingleCoinCandles(shorts[0], interval, hoursBack);
+		}
+
+		// If no shorts, just return the first long's candles
+		if (shorts.length === 0) {
+			return await fetchSingleCoinCandles(longs[0], interval, hoursBack);
+		}
+
+		// Fetch candles for all assets in parallel
+		const allCoins = [...longs, ...shorts];
+		const allCandlesArrays = await Promise.all(
+			allCoins.map(coin => fetchSingleCoinCandles(coin, interval, hoursBack))
+		);
+
+		// Create a map of coin -> candles indexed by timestamp
+		const candlesByTime: Map<number, Map<string, Candle>> = new Map();
+		
+		allCandlesArrays.forEach((candleArray, idx) => {
+			const coin = allCoins[idx];
+			candleArray.forEach(candle => {
+				if (!candlesByTime.has(candle.t)) {
+					candlesByTime.set(candle.t, new Map());
+				}
+				candlesByTime.get(candle.t)!.set(coin, candle);
+			});
+		});
+
+		// Calculate ratio candles (sum of longs / sum of shorts)
+		const ratioCandles: Candle[] = [];
+		
+		const sortedTimes = Array.from(candlesByTime.keys()).sort((a, b) => a - b);
+		
+		for (const time of sortedTimes) {
+			const coinsAtTime = candlesByTime.get(time)!;
+			
+			// Check if we have all coins for this timestamp
+			const hasAllCoins = allCoins.every(coin => coinsAtTime.has(coin));
+			if (!hasAllCoins) continue;
+
+			// Calculate weighted sum for longs and shorts
+			let longOpen = 0, longClose = 0, longHigh = 0, longLow = 0;
+			let shortOpen = 0, shortClose = 0, shortHigh = 0, shortLow = 0;
+
+			for (const coin of longs) {
+				const c = coinsAtTime.get(coin)!;
+				longOpen += parseFloat(c.o);
+				longClose += parseFloat(c.c);
+				longHigh += parseFloat(c.h);
+				longLow += parseFloat(c.l);
+			}
+
+			for (const coin of shorts) {
+				const c = coinsAtTime.get(coin)!;
+				shortOpen += parseFloat(c.o);
+				shortClose += parseFloat(c.c);
+				shortHigh += parseFloat(c.h);
+				shortLow += parseFloat(c.l);
+			}
+
+			// Calculate ratio (long / short)
+			const firstCandle = coinsAtTime.get(longs[0])!;
+			ratioCandles.push({
+				t: time,
+				T: firstCandle.T,
+				s: `${longs.join("+")}/${shorts.join("+")}`,
+				i: firstCandle.i,
+				o: (longOpen / shortOpen).toFixed(6),
+				c: (longClose / shortClose).toFixed(6),
+				h: (longHigh / shortLow).toFixed(6), // Max ratio
+				l: (longLow / shortHigh).toFixed(6), // Min ratio
+				v: "0",
+				n: 0
+			});
+		}
+
+		return ratioCandles;
 	}
 
 	// Game state
@@ -83,6 +185,24 @@
 	let isLoadingChart = $state(false);
 	let chartInterval = $state<"5m" | "15m" | "1h" | "4h">("15m");
 	let chartRefreshInterval: ReturnType<typeof setInterval> | undefined;
+	let chartError = $state<string | null>(null);
+	
+	// Zoom / Time range state (in hours)
+	let chartTimeRange = $state<number>(24); // Default 24 hours
+	const timeRangeOptions = [
+		{ label: "1H", hours: 1 },
+		{ label: "4H", hours: 4 },
+		{ label: "12H", hours: 12 },
+		{ label: "1D", hours: 24 },
+		{ label: "3D", hours: 72 },
+		{ label: "1W", hours: 168 },
+	];
+
+	// Crosshair state for mouse tracking
+	let crosshairX = $state<number | null>(null);
+	let crosshairY = $state<number | null>(null);
+	let crosshairPrice = $state<number | null>(null);
+	let crosshairTime = $state<string | null>(null);
 
 	// Timer
 	let timeLeft = $state("");
@@ -146,17 +266,25 @@
 	async function loadChart(pair: string, interval: string, showLoading: boolean = true) {
 		if (showLoading) isLoadingChart = true;
 		try {
-			const newCandles = await fetchCandles(pair, interval);
+			const newCandles = await fetchPairCandles(pair, interval, chartTimeRange);
 			// Only update if we're still on the same pair
 			if (selectedPair === pair) {
 				candles = newCandles;
+				chartError = null; // Clear any previous error
 				// Wait for DOM to update, then draw
 				await tick();
 				drawChart();
 			}
 		} catch (err) {
 			console.error("Failed to load chart:", err);
-			// Don't clear candles on error - keep existing data visible
+			if (selectedPair === pair) {
+				chartError = `Failed to fetch ${formatPairDisplay(pair)} data. Trading is paused.`;
+				// Clear the refresh interval on error
+				if (chartRefreshInterval) {
+					clearInterval(chartRefreshInterval);
+					chartRefreshInterval = undefined;
+				}
+			}
 		} finally {
 			if (showLoading) isLoadingChart = false;
 		}
@@ -170,7 +298,7 @@
 
 		const width = chartCanvas.width;
 		const height = chartCanvas.height;
-		const padding = { top: 20, right: 60, bottom: 30, left: 10 };
+		const padding = { top: 20, right: 70, bottom: 30, left: 10 };
 		const chartWidth = width - padding.left - padding.right;
 		const chartHeight = height - padding.top - padding.bottom;
 
@@ -183,6 +311,10 @@
 		const minPrice = Math.min(...prices);
 		const maxPrice = Math.max(...prices);
 		const priceRange = maxPrice - minPrice || 1;
+
+		// Determine decimal places based on price magnitude
+		const avgPrice = (maxPrice + minPrice) / 2;
+		const decimals = avgPrice < 1 ? 6 : avgPrice < 10 ? 4 : avgPrice < 100 ? 3 : 2;
 
 		// Draw grid lines
 		ctx.strokeStyle = "#1f1f1f";
@@ -197,9 +329,9 @@
 			// Price labels
 			const price = maxPrice - (priceRange / 5) * i;
 			ctx.fillStyle = "#666";
-			ctx.font = "11px monospace";
+			ctx.font = "10px monospace";
 			ctx.textAlign = "left";
-			ctx.fillText(price.toFixed(2), width - padding.right + 5, y + 4);
+			ctx.fillText(price.toFixed(decimals), width - padding.right + 5, y + 4);
 		}
 
 		// Draw candles
@@ -254,10 +386,10 @@
 
 			// Current price label
 			ctx.fillStyle = "#3b82f6";
-			ctx.fillRect(width - padding.right, y - 10, 55, 20);
+			ctx.fillRect(width - padding.right, y - 10, 65, 20);
 			ctx.fillStyle = "#fff";
-			ctx.font = "bold 11px monospace";
-			ctx.fillText(currentPrice.toFixed(2), width - padding.right + 5, y + 4);
+			ctx.font = "bold 10px monospace";
+			ctx.fillText(currentPrice.toFixed(decimals), width - padding.right + 3, y + 4);
 		}
 	}
 
@@ -414,13 +546,8 @@
 				</div>
 
 				<!-- Stats Bar -->
-				<div class="grid grid-cols-4 gap-4">
-					<Card.Root>
-						<Card.Content class="pt-6">
-							<div class="text-2xl font-bold">{getRankEmoji(getMyPosition())}</div>
-							<div class="text-sm text-muted-foreground">Your Position</div>
-						</Card.Content>
-					</Card.Root>
+				<div class="grid grid-cols-4 gap-4 justify-center">
+					
 					<Card.Root>
 						<Card.Content class="pt-6">
 							<div class="text-2xl font-bold {getMyPnL() >= 0 ? 'text-green-500' : 'text-red-500'}">
@@ -448,31 +575,62 @@
 					<Card.Header class="flex flex-row items-center justify-between space-y-0 pb-2">
 						<div>
 							<Card.Title class="text-xl">
-								{selectedPair || "Select a pair"} Chart
+								{selectedPair ? formatPairDisplay(selectedPair) : "Select a pair"} Chart
 							</Card.Title>
-							<Card.Description>Live price data from Hyperliquid</Card.Description>
+							<Card.Description>
+								{#if selectedPair}
+									{@const parsed = parsePairKey(selectedPair)}
+									{#if parsed.shorts.length > 0}
+										Ratio chart: {parsed.longs.join("+")} / {parsed.shorts.join("+")}
+									{:else}
+										Price chart from Hyperliquid
+									{/if}
+								{:else}
+									Select a pair to view chart
+								{/if}
+							</Card.Description>
 						</div>
-						<div class="flex gap-1">
-							{#each ["5m", "15m", "1h", "4h"] as interval}
+						<div class="flex flex-col gap-2 items-end">
+							<!-- Candle Interval -->
+							<div class="flex gap-1">
+								{#each ["5m", "15m", "1h", "4h"] as interval}
+									<button
+										class="px-3 py-1 text-sm rounded transition-colors {chartInterval === interval
+											? 'bg-primary text-primary-foreground'
+											: 'bg-muted hover:bg-muted/80'}"
+										onclick={() => {
+											chartInterval = interval as "5m" | "15m" | "1h" | "4h";
+											if (selectedPair) loadChart(selectedPair, interval);
+										}}
+									>
+										{interval}
+									</button>
+								{/each}
 								<button
-									class="px-3 py-1 text-sm rounded transition-colors {chartInterval === interval
-										? 'bg-primary text-primary-foreground'
-										: 'bg-muted hover:bg-muted/80'}"
-									onclick={() => {
-										chartInterval = interval as "5m" | "15m" | "1h" | "4h";
-										if (selectedPair) loadChart(selectedPair, interval);
-									}}
+									class="px-3 py-1 text-sm rounded bg-muted hover:bg-muted/80 ml-2"
+									onclick={() => selectedPair && loadChart(selectedPair, chartInterval)}
+									disabled={isLoadingChart}
 								>
-									{interval}
+									🔄
 								</button>
-							{/each}
-							<button
-								class="px-3 py-1 text-sm rounded bg-muted hover:bg-muted/80 ml-2"
-								onclick={() => selectedPair && loadChart(selectedPair, chartInterval)}
-								disabled={isLoadingChart}
-							>
-								🔄
-							</button>
+							</div>
+							<!-- Zoom / Time Range -->
+							<div class="flex gap-1 items-center">
+								<span class="text-xs text-muted-foreground mr-1">Range:</span>
+								{#each timeRangeOptions as option}
+									<button
+										class="px-2 py-0.5 text-xs rounded transition-colors {chartTimeRange === option.hours
+											? 'bg-blue-500 text-white'
+											: 'bg-muted hover:bg-muted/80'}"
+										onclick={() => {
+											chartTimeRange = option.hours;
+											if (selectedPair) loadChart(selectedPair, chartInterval);
+										}}
+									>
+										{option.label}
+									</button>
+								{/each}
+							</div>
 						</div>
 					</Card.Header>
 					<Card.Content>
@@ -481,9 +639,98 @@
 								bind:this={chartCanvas}
 								width="800"
 								height="256"
-								class="w-full h-full"
+								class="w-full h-full cursor-crosshair"
+								onmousemove={(e) => {
+									if (!chartCanvas || candles.length === 0) return;
+									const rect = chartCanvas.getBoundingClientRect();
+									const scaleX = chartCanvas.width / rect.width;
+									const scaleY = chartCanvas.height / rect.height;
+									const x = (e.clientX - rect.left) * scaleX;
+									const y = (e.clientY - rect.top) * scaleY;
+									
+									const padding = { top: 20, right: 70, bottom: 30, left: 10 };
+									const chartWidth = chartCanvas.width - padding.left - padding.right;
+									const chartHeight = chartCanvas.height - padding.top - padding.bottom;
+									
+									// Check if within chart area
+									if (x >= padding.left && x <= chartCanvas.width - padding.right &&
+									    y >= padding.top && y <= chartCanvas.height - padding.bottom) {
+										
+										// Calculate price at cursor
+										const prices = candles.flatMap((c) => [parseFloat(c.h), parseFloat(c.l)]);
+										const minPrice = Math.min(...prices);
+										const maxPrice = Math.max(...prices);
+										const priceRange = maxPrice - minPrice || 1;
+										const priceAtY = maxPrice - ((y - padding.top) / chartHeight) * priceRange;
+										
+										// Calculate candle/time at cursor
+										const candleIndex = Math.floor(((x - padding.left) / chartWidth) * candles.length);
+										const clampedIndex = Math.max(0, Math.min(candleIndex, candles.length - 1));
+										const candleTime = new Date(candles[clampedIndex].t);
+										
+										crosshairX = (x / chartCanvas.width) * 100;
+										crosshairY = (y / chartCanvas.height) * 100;
+										crosshairPrice = priceAtY;
+										crosshairTime = candleTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+									} else {
+										crosshairX = null;
+										crosshairY = null;
+										crosshairPrice = null;
+										crosshairTime = null;
+									}
+								}}
+								onmouseleave={() => {
+									crosshairX = null;
+									crosshairY = null;
+									crosshairPrice = null;
+									crosshairTime = null;
+								}}
 							></canvas>
-							{#if isLoadingChart}
+							
+							<!-- Crosshair overlay -->
+							{#if crosshairX !== null && crosshairY !== null}
+								<!-- Vertical line -->
+								<div 
+									class="absolute top-0 bottom-0 w-px bg-blue-500/70 pointer-events-none"
+									style="left: {crosshairX}%"
+								></div>
+								<!-- Horizontal line -->
+								<div 
+									class="absolute left-0 right-0 h-px bg-blue-500/70 pointer-events-none"
+									style="top: {crosshairY}%"
+								></div>
+								<!-- Price label on Y axis -->
+								<div 
+									class="absolute right-0 bg-blue-500 text-white text-xs font-mono px-1 py-0.5 rounded-l pointer-events-none"
+									style="top: {crosshairY}%; transform: translateY(-50%)"
+								>
+									{crosshairPrice !== null ? (crosshairPrice < 1 ? crosshairPrice.toFixed(6) : crosshairPrice < 10 ? crosshairPrice.toFixed(4) : crosshairPrice < 100 ? crosshairPrice.toFixed(3) : crosshairPrice.toFixed(2)) : ''}
+								</div>
+								<!-- Time label on X axis -->
+								<div 
+									class="absolute bottom-0 bg-blue-500 text-white text-xs font-mono px-1 py-0.5 rounded-t pointer-events-none"
+									style="left: {crosshairX}%; transform: translateX(-50%)"
+								>
+									{crosshairTime}
+								</div>
+							{/if}
+							{#if chartError}
+								<div class="absolute inset-0 flex flex-col items-center justify-center bg-red-950/90 text-red-400 p-4">
+									<svg class="w-12 h-12 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+									</svg>
+									<p class="text-center font-medium">{chartError}</p>
+									<button
+										class="mt-3 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors"
+										onclick={() => {
+											chartError = null;
+											if (selectedPair) loadChart(selectedPair, chartInterval, true);
+										}}
+									>
+										Retry Connection
+									</button>
+								</div>
+							{:else if isLoadingChart}
 								<div class="absolute inset-0 flex items-center justify-center text-muted-foreground bg-[#0a0a0a]">
 									Loading chart...
 								</div>
@@ -498,24 +745,38 @@
 							{@const firstCandle = candles[0]}
 							{@const priceChange = parseFloat(lastCandle.c) - parseFloat(firstCandle.o)}
 							{@const priceChangePercent = (priceChange / parseFloat(firstCandle.o)) * 100}
+							{@const firstTime = new Date(firstCandle.t)}
+							{@const lastTime = new Date(lastCandle.T)}
+							{@const hoursAgo = Math.round((Date.now() - firstCandle.t) / (1000 * 60 * 60))}
+							{@const avgPrice = (parseFloat(lastCandle.h) + parseFloat(lastCandle.l)) / 2}
+							{@const dec = avgPrice < 1 ? 6 : avgPrice < 10 ? 4 : avgPrice < 100 ? 3 : 2}
 							<div class="flex items-center justify-between mt-3 text-sm">
 								<div class="flex gap-4">
 									<span>
-										O: <span class="font-mono">{parseFloat(firstCandle.o).toFixed(2)}</span>
+										O: <span class="font-mono">{parseFloat(firstCandle.o).toFixed(dec)}</span>
 									</span>
 									<span>
-										H: <span class="font-mono text-green-500">{Math.max(...candles.map(c => parseFloat(c.h))).toFixed(2)}</span>
+										H: <span class="font-mono text-green-500">{Math.max(...candles.map(c => parseFloat(c.h))).toFixed(dec)}</span>
 									</span>
 									<span>
-										L: <span class="font-mono text-red-500">{Math.min(...candles.map(c => parseFloat(c.l))).toFixed(2)}</span>
+										L: <span class="font-mono text-red-500">{Math.min(...candles.map(c => parseFloat(c.l))).toFixed(dec)}</span>
 									</span>
 									<span>
-										C: <span class="font-mono">{parseFloat(lastCandle.c).toFixed(2)}</span>
+										C: <span class="font-mono">{parseFloat(lastCandle.c).toFixed(dec)}</span>
 									</span>
 								</div>
 								<div class="{priceChange >= 0 ? 'text-green-500' : 'text-red-500'} font-medium">
-									{priceChange >= 0 ? '+' : ''}{priceChange.toFixed(2)} ({priceChangePercent >= 0 ? '+' : ''}{priceChangePercent.toFixed(2)}%)
+									{priceChange >= 0 ? '+' : ''}{priceChange.toFixed(dec)} ({priceChangePercent >= 0 ? '+' : ''}{priceChangePercent.toFixed(2)}%)
 								</div>
+							</div>
+							<div class="flex items-center justify-between mt-2 text-xs text-muted-foreground">
+								<span>
+									📅 From: {firstTime.toLocaleDateString()} {firstTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+									→ {lastTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+								</span>
+								<span>
+									{candles.length} candles • ~{hoursAgo}h lookback
+								</span>
 							</div>
 						{/if}
 					</Card.Content>
@@ -540,7 +801,7 @@
 
 								<!-- Pair Selection -->
 								<div class="space-y-2">
-									<Label>Select Pair</Label>
+									<Label>Trading Pair</Label>
 									<div class="flex flex-wrap gap-2">
 										{#each game.tradingPairs as pair}
 											<button
@@ -549,7 +810,7 @@
 													: 'bg-background hover:bg-muted'}"
 												onclick={() => (selectedPair = pair)}
 											>
-												{pair}
+												{formatPairDisplay(pair)}
 											</button>
 										{/each}
 									</div>
@@ -604,14 +865,16 @@
 									class="w-full"
 									size="lg"
 									onclick={executeTrade}
-									disabled={isExecutingTrade || !selectedPair || game.status !== 'active'}
+									disabled={isExecutingTrade || !selectedPair || game.status !== 'active' || !!chartError}
 								>
-									{#if game.status !== 'active'}
+									{#if chartError}
+										Trading Paused - API Error
+									{:else if game.status !== 'active'}
 										Game Not Active
 									{:else if isExecutingTrade}
 										Executing...
 									{:else}
-										Execute {tradeSide.toUpperCase()} {selectedPair}
+										Execute {tradeSide.toUpperCase()} {selectedPair ? formatPairDisplay(selectedPair) : ''}
 									{/if}
 								</Button>
 							</Card.Content>
