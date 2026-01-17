@@ -158,6 +158,11 @@
 							🎉 Welcome! Your account has been created.
 						</p>
 					{/if}
+					<a href="/create" class="block">
+						<Button class="w-full">
+							Go to Lobby Creation
+						</Button>
+					</a>
 					<Button onclick={disconnect} variant="outline" class="w-full">
 						Disconnect
 					</Button>
