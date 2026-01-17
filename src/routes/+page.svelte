@@ -38,7 +38,7 @@
 
 			// Login with Convex
 			const result = await convex.mutation(api.auth.loginWithWallet, {
-				walletAddress
+				walletAddress, 
 			});
 
 			user = result;

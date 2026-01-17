@@ -18,13 +18,15 @@ export const loginWithWallet = mutation({
       .first();
 
     if (existingUser) {
-      // Update last login time
+      // Update last login time and set status to ACTIVE
       await ctx.db.patch(existingUser._id, {
         lastLoginAt: Date.now(),
+        walletStatus: "ACTIVE",
       });
       return {
         walletAddress: existingUser.walletAddress,
         username: existingUser.username,
+        walletStatus: "ACTIVE",
         isNewUser: false,
       };
     }
@@ -34,11 +36,13 @@ export const loginWithWallet = mutation({
       walletAddress,
       createdAt: Date.now(),
       lastLoginAt: Date.now(),
+      walletStatus: "ACTIVE",
     });
 
     return {
       walletAddress,
       username: undefined,
+      walletStatus: "ACTIVE",
       isNewUser: true,
     };
   },
@@ -137,7 +141,7 @@ export const updateUsername = mutation({
   },
   handler: async (ctx, args) => {
     const walletAddress = args.walletAddress.toLowerCase();
-    const username = args.username.trim();
+    const username = args.username;
 
     if (!username || username.length < 1) {
       throw new Error("Username cannot be empty");
@@ -157,9 +161,9 @@ export const updateUsername = mutation({
     }
 
     await ctx.db.patch(user._id, {
-      username,
+      username: args.username,
     });
 
-    return { success: true, username };
+    return { success: true, username: args.username };
   },
 });
