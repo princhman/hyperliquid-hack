@@ -31,8 +31,13 @@ export default defineSchema({
     startTime: v.number(),
     endTime: v.number(),
     buyIn: v.number(),
-    // split should be defined later
-  }).index("by_status", ["status"]),
+    split: v.number(), 
+    /* Percentage of what n1 takes, 
+    option1 - winner takes 100 %, 
+    2 - winner gets 75 % and rest split up 25 %, 
+    3 - winner gets 60% rest split up 40 %
+  */
+    }).index("by_status", ["status"]),
 
   userToLobby: defineTable({
     userId: v.id("users"),
