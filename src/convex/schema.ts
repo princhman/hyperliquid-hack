@@ -10,12 +10,6 @@ export default defineSchema({
 
   lobby: defineTable({
     name: v.string(),
-    status: v.union(
-      v.literal("not started"),
-      v.literal("started"),
-      v.literal("finished"),
-    ),
-
     createdBy: v.id("users"),
     createdAt: v.number(),
 
@@ -24,7 +18,7 @@ export default defineSchema({
     endTime: v.number(),
     buyIn: v.number(),
     // split should be defined later
-  }).index("by_status", ["status"]),
+  }),
 
   userToLobby: defineTable({
     userId: v.id("users"),

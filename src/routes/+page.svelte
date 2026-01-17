@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onMount, onDestroy } from "svelte";
     import { Button } from "$lib/components/ui/button";
     import { Input } from "$lib/components/ui/input";
     import { Label } from "$lib/components/ui/label";
@@ -8,12 +8,24 @@
     import { auth } from "$lib/stores/auth";
     import type { Id } from "../convex/_generated/dataModel";
     import type { FunctionReturnType } from "convex/server";
-    import { LogOut, Plus } from "@lucide/svelte";
+    import { LogOut, Plus, ArrowLeft, Trophy } from "@lucide/svelte";
     import { sendBuyIn } from "$lib/usdc";
     import { reconnect } from "@wagmi/core";
     import { config } from "$lib/wagmi";
 
     type Lobby = FunctionReturnType<typeof api.lobby.getLobbies>[number];
+    type LeaderboardEntry = FunctionReturnType<
+        typeof api.lobby.getLeaderboard
+    >[number];
+    type Position = {
+        positionId: string;
+        coin: string;
+        entryPrice: number;
+        actualSize: number;
+        leverage: number;
+        positionValue: number;
+        unrealizedPnl: number;
+    };
 
     let walletAddress = $state("");
     let username = $state("");
@@ -39,6 +51,24 @@
     let newLobbyDuration = $state(30); // minutes
     let creatingLobby = $state(false);
 
+    // Active lobby state
+    let activeLobby = $state<Lobby | null>(null);
+    let leaderboard = $state<LeaderboardEntry[]>([]);
+    let positions = $state<Position[]>([]);
+    let userBalance = $state(0);
+    let syncActive = $state(false);
+    let refreshInterval: ReturnType<typeof setInterval> | null = null;
+
+    // Buy form (pair trading: long one asset, short another)
+    let buyLongAsset = $state("BTC");
+    let buyShortAsset = $state("ETH");
+    let buyLeverage = $state(1);
+    let buyUsdValue = $state(100);
+    let buySlippage = $state(0.01);
+    let buyExecutionType = $state<"MARKET" | "SYNC" | "TWAP">("MARKET");
+    let buyingPosition = $state(false);
+    let closingPositionId = $state<string | null>(null);
+
     // Helper to get default start time (5 min from now, rounded to nearest 5 min)
     function getDefaultStartTime() {
         const now = new Date();
@@ -57,6 +87,10 @@
         if (storedWallet) {
             await checkExistingUser(storedWallet);
         }
+    });
+
+    onDestroy(() => {
+        if (refreshInterval) clearInterval(refreshInterval);
     });
 
     async function checkExistingUser(address: string) {
@@ -257,6 +291,215 @@
                 return "";
         }
     }
+
+    // Derive status on frontend to avoid timezone issues
+    function deriveStatus(
+        startTime: number,
+        endTime: number,
+    ): "not started" | "started" | "finished" {
+        const now = Date.now();
+        if (now < startTime) return "not started";
+        if (now >= endTime) return "finished";
+        return "started";
+    }
+
+    async function enterLobby(lobby: Lobby) {
+        activeLobby = lobby;
+        await refreshActiveLobby();
+
+        // Start refresh interval
+        if (refreshInterval) clearInterval(refreshInterval);
+        refreshInterval = setInterval(refreshActiveLobby, 3000);
+
+        // Start sync if lobby is started
+        if (lobby.status === "started" && currentUser) {
+            await startSync();
+        }
+    }
+
+    async function refreshActiveLobby() {
+        if (!activeLobby || !currentUser) return;
+
+        // Derive current status from timestamps (frontend)
+        const currentStatus = deriveStatus(
+            activeLobby.startTime,
+            activeLobby.endTime,
+        );
+        activeLobby = { ...activeLobby, status: currentStatus };
+
+        // Check if game ended
+        if (currentStatus === "finished" && positions.length > 0) {
+            await endGame();
+            return;
+        }
+
+        // Start sync if just started
+        if (currentStatus === "started" && !syncActive) {
+            await startSync();
+        }
+
+        // Load leaderboard
+        leaderboard = await convex.query(api.lobby.getLeaderboard, {
+            lobbyId: activeLobby._id,
+        });
+
+        // Get user balance
+        const userEntry = leaderboard.find(
+            (e) => e.username === currentUser?.username,
+        );
+        userBalance = userEntry?.totalValue ?? activeLobby.buyIn;
+
+        // Load positions
+        try {
+            const res = await fetch("/api/positions", {
+                headers: {
+                    Authorization: `Bearer ${import.meta.env.VITE_PEAR_API_TOKEN}`,
+                },
+            });
+            if (res.ok) {
+                const data = await res.json();
+                positions = data.positions || [];
+            }
+        } catch (e) {
+            console.error("Failed to load positions:", e);
+        }
+    }
+
+    async function startSync() {
+        if (!currentUser || syncActive) return;
+        try {
+            await fetch("/api/positions/sync", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    address: currentUser.walletAddress,
+                    lobbyId: activeLobby?._id,
+                }),
+            });
+            syncActive = true;
+        } catch (e) {
+            console.error("Failed to start sync:", e);
+        }
+    }
+
+    async function buyPosition() {
+        if (!currentUser || !activeLobby || buyingPosition) return;
+
+        // Validate balance
+        if (buyUsdValue > userBalance) {
+            error = "Insufficient balance";
+            return;
+        }
+
+        buyingPosition = true;
+        error = "";
+
+        try {
+            const res = await fetch("/api/positions", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${import.meta.env.VITE_PEAR_API_TOKEN}`,
+                },
+                body: JSON.stringify({
+                    lobbyId: activeLobby._id,
+                    userId: currentUser.id,
+                    slippage: buySlippage,
+                    executionType: buyExecutionType,
+                    leverage: buyLeverage,
+                    usdValue: buyUsdValue,
+                    longAsset: buyLongAsset,
+                    shortAsset: buyShortAsset,
+                }),
+            });
+
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.error || "Failed to open position");
+            }
+
+            await refreshActiveLobby();
+        } catch (e) {
+            error = e instanceof Error ? e.message : "Failed to open position";
+        } finally {
+            buyingPosition = false;
+        }
+    }
+
+    async function closePosition(positionId: string) {
+        if (!currentUser || !activeLobby || closingPositionId) return;
+
+        closingPositionId = positionId;
+        error = "";
+
+        try {
+            const res = await fetch("/api/positions/close", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${import.meta.env.VITE_PEAR_API_TOKEN}`,
+                },
+                body: JSON.stringify({
+                    positionId,
+                    lobbyId: activeLobby._id,
+                    userId: currentUser.id,
+                }),
+            });
+
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.error || "Failed to close position");
+            }
+
+            await refreshActiveLobby();
+        } catch (e) {
+            error = e instanceof Error ? e.message : "Failed to close position";
+        } finally {
+            closingPositionId = null;
+        }
+    }
+
+    async function endGame() {
+        if (!activeLobby || !currentUser) return;
+
+        // Close all positions
+        try {
+            await fetch("/api/positions/close-all", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${import.meta.env.VITE_PEAR_API_TOKEN}`,
+                },
+                body: JSON.stringify({
+                    address: currentUser.walletAddress,
+                    lobbyId: activeLobby._id,
+                    userId: currentUser.id,
+                }),
+            });
+        } catch (e) {
+            console.error("Failed to close all positions:", e);
+        }
+
+        // Status is derived from time, just refresh to show final state
+        activeLobby = { ...activeLobby, status: "finished" };
+        await refreshActiveLobby();
+
+        if (refreshInterval) {
+            clearInterval(refreshInterval);
+            refreshInterval = null;
+        }
+    }
+
+    function leaveLobby() {
+        if (refreshInterval) {
+            clearInterval(refreshInterval);
+            refreshInterval = null;
+        }
+        activeLobby = null;
+        leaderboard = [];
+        positions = [];
+        loadLobbies();
+    }
 </script>
 
 <div class="min-h-screen bg-background p-4">
@@ -337,6 +580,219 @@
                             {/if}
                         </Button>
                     {/if}
+                </Card.Content>
+            </Card.Root>
+        </div>
+    {:else if step === "logged-in" && currentUser && activeLobby}
+        <!-- Active Lobby View -->
+        <div class="mx-auto max-w-4xl space-y-6">
+            <!-- Header -->
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-4">
+                    <Button onclick={leaveLobby} variant="ghost" size="icon">
+                        <ArrowLeft class="size-4" />
+                    </Button>
+                    <div>
+                        <h1 class="text-2xl font-bold">{activeLobby.name}</h1>
+                        <p class="text-sm text-muted-foreground">
+                            Balance: <span class="font-mono font-bold"
+                                >${userBalance.toFixed(2)}</span
+                            >
+                            <span class={getStatusColor(activeLobby.status)}>
+                                - {activeLobby.status}</span
+                            >
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {#if error}
+                <div
+                    class="rounded-md bg-destructive/10 p-3 text-sm text-destructive"
+                >
+                    {error}
+                </div>
+            {/if}
+
+            <!-- Buy Form (only if started) -->
+            {#if activeLobby.status === "started"}
+                <Card.Root>
+                    <Card.Header>
+                        <Card.Title>Open Pair Trade</Card.Title>
+                    </Card.Header>
+                    <Card.Content class="space-y-4">
+                        <div class="grid grid-cols-4 gap-4">
+                            <div class="space-y-2">
+                                <Label>Long</Label>
+                                <Input
+                                    bind:value={buyLongAsset}
+                                    placeholder="BTC"
+                                />
+                            </div>
+                            <div class="space-y-2">
+                                <Label>Short</Label>
+                                <Input
+                                    bind:value={buyShortAsset}
+                                    placeholder="ETH"
+                                />
+                            </div>
+                            <div class="space-y-2">
+                                <Label>USD</Label>
+                                <Input
+                                    type="number"
+                                    bind:value={buyUsdValue}
+                                    min={1}
+                                    max={userBalance}
+                                />
+                            </div>
+                            <div class="space-y-2">
+                                <Label>Leverage</Label>
+                                <Input
+                                    type="number"
+                                    bind:value={buyLeverage}
+                                    min={1}
+                                    max={100}
+                                />
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-3 gap-4">
+                            <div class="space-y-2">
+                                <Label>Slippage</Label>
+                                <Input
+                                    type="number"
+                                    bind:value={buySlippage}
+                                    min={0.001}
+                                    max={0.1}
+                                    step={0.001}
+                                />
+                            </div>
+                            <div class="space-y-2">
+                                <Label>Execution</Label>
+                                <select
+                                    bind:value={buyExecutionType}
+                                    class="w-full h-10 px-3 rounded-md border bg-background"
+                                >
+                                    <option value="MARKET">MARKET</option>
+                                    <option value="SYNC">SYNC</option>
+                                    <option value="TWAP">TWAP</option>
+                                </select>
+                            </div>
+                            <div class="flex items-end">
+                                <Button
+                                    onclick={buyPosition}
+                                    disabled={buyingPosition ||
+                                        buyUsdValue > userBalance}
+                                    class="w-full"
+                                >
+                                    {buyingPosition
+                                        ? "Opening..."
+                                        : "Open Trade"}
+                                </Button>
+                            </div>
+                        </div>
+                    </Card.Content>
+                </Card.Root>
+
+                <!-- Open Positions -->
+                {#if positions.length > 0}
+                    <Card.Root>
+                        <Card.Header>
+                            <Card.Title>Your Positions</Card.Title>
+                        </Card.Header>
+                        <Card.Content>
+                            <div class="space-y-2">
+                                {#each positions as pos}
+                                    <div
+                                        class="flex items-center justify-between p-3 border rounded-md"
+                                    >
+                                        <div>
+                                            <span class="font-bold"
+                                                >{pos.coin}</span
+                                            >
+                                            <span
+                                                class="text-muted-foreground ml-2"
+                                                >{pos.leverage}x</span
+                                            >
+                                        </div>
+                                        <div class="text-right">
+                                            <div>
+                                                ${pos.positionValue.toFixed(2)}
+                                            </div>
+                                            <div
+                                                class={pos.unrealizedPnl >= 0
+                                                    ? "text-green-500"
+                                                    : "text-red-500"}
+                                            >
+                                                {pos.unrealizedPnl >= 0
+                                                    ? "+"
+                                                    : ""}{pos.unrealizedPnl.toFixed(
+                                                    2,
+                                                )}
+                                            </div>
+                                        </div>
+                                        <Button
+                                            onclick={() =>
+                                                closePosition(pos.positionId)}
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={closingPositionId ===
+                                                pos.positionId}
+                                        >
+                                            {closingPositionId ===
+                                            pos.positionId
+                                                ? "Closing..."
+                                                : "Close"}
+                                        </Button>
+                                    </div>
+                                {/each}
+                            </div>
+                        </Card.Content>
+                    </Card.Root>
+                {/if}
+            {/if}
+
+            <!-- Leaderboard -->
+            <Card.Root>
+                <Card.Header>
+                    <Card.Title class="flex items-center gap-2">
+                        <Trophy class="size-5" />
+                        {activeLobby.status === "finished"
+                            ? "Final Leaderboard"
+                            : "Leaderboard"}
+                    </Card.Title>
+                </Card.Header>
+                <Card.Content>
+                    <div class="space-y-2">
+                        {#each leaderboard as entry}
+                            <div
+                                class="flex items-center justify-between p-3 border rounded-md {entry.username ===
+                                currentUser.username
+                                    ? 'bg-muted'
+                                    : ''}"
+                            >
+                                <div class="flex items-center gap-3">
+                                    <span class="font-bold text-lg w-8"
+                                        >#{entry.rank}</span
+                                    >
+                                    <span>{entry.username}</span>
+                                </div>
+                                <div class="text-right">
+                                    <div class="font-mono">
+                                        ${entry.totalValue.toFixed(2)}
+                                    </div>
+                                    <div
+                                        class={entry.pnl >= 0
+                                            ? "text-green-500 text-sm"
+                                            : "text-red-500 text-sm"}
+                                    >
+                                        {entry.pnl >= 0
+                                            ? "+"
+                                            : ""}{entry.pnl.toFixed(2)}
+                                    </div>
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
                 </Card.Content>
             </Card.Root>
         </div>
@@ -558,8 +1014,8 @@
                                         </div>
                                     </div>
                                 </Card.Content>
-                                {#if lobby.status === "not started" && !lobby.hasJoined}
-                                    <Card.Footer>
+                                <Card.Footer>
+                                    {#if lobby.status === "not started" && !lobby.hasJoined}
                                         <Button
                                             onclick={() => joinLobby(lobby)}
                                             disabled={joiningLobbyId ===
@@ -572,8 +1028,15 @@
                                                 Join Lobby (${lobby.buyIn} USDC)
                                             {/if}
                                         </Button>
-                                    </Card.Footer>
-                                {/if}
+                                    {:else if lobby.hasJoined}
+                                        <Button
+                                            onclick={() => enterLobby(lobby)}
+                                            class="w-full"
+                                        >
+                                            Trade
+                                        </Button>
+                                    {/if}
+                                </Card.Footer>
                             </Card.Root>
                         {/each}
                     </div>
