@@ -1,369 +1,925 @@
 <script lang="ts">
-    import { Button } from "$lib/components/ui/button";
-    import * as Card from "$lib/components/ui/card";
-    import { goto } from "$app/navigation";
-    import {
-        auth,
-        isConnected,
-        isAuthenticated,
-        walletAddress,
-    } from "$lib/stores/auth";
-    import { convex } from "$lib/convex";
-    import { api } from "../convex/_generated/api";
-    import * as pear from "$lib/pear/client";
+    import { signUserSignedAction } from "@nktkas/hyperliquid/signing";
+    import { ApproveAgentTypes } from "@nktkas/hyperliquid/api/exchange";
+    import { browser } from "$app/environment";
 
-    let isLoading = $state(false);
-    let errorMessage = $state<string | null>(null);
-    let currentStep = $state<
-        "connect" | "authenticate" | "agent-wallet" | "ready"
-    >("connect");
-    let agentWalletAddress = $state<string | null>(null);
-    let accessToken = $state<string | null>(null);
+    const clientId = "HLHackathon5";
+    const STORAGE_KEY = "hyperliquid_session";
 
-    // Subscribe to auth store for state updates
-    auth.subscribe((state) => {
-        errorMessage = state.error;
-        agentWalletAddress = state.agentWalletAddress;
+    interface SessionData {
+        walletAddress: string;
+        agentWalletAddress: string;
+        accessToken: string;
+        isAgentApproved: boolean;
+    }
 
-        // Determine current step based on state
-        if (!state.isConnected) {
-            currentStep = "connect";
-        } else if (!state.isAuthenticated) {
-            currentStep = "authenticate";
-        } else if (state.agentWalletStatus !== "ACTIVE") {
-            currentStep = "agent-wallet";
-        } else {
-            currentStep = "ready";
+    interface Order {
+        id: string;
+        asset: string;
+        amount: number;
+        price: number;
+    }
+
+    interface PositionAssetDetail {
+        coin: string;
+        entryPrice: number;
+        actualSize: number;
+        leverage: number;
+        marginUsed: number;
+        positionValue: number;
+        unrealizedPnl: number;
+        entryPositionValue: number;
+        initialWeight: number;
+        fundingPaid?: number;
+    }
+
+    interface TpSlThreshold {
+        type:
+            | "PERCENTAGE"
+            | "DOLLAR"
+            | "POSITION_VALUE"
+            | "PRICE"
+            | "PRICE_RATIO"
+            | "WEIGHTED_RATIO";
+        value: number;
+        isTrailing?: boolean;
+        trailingDeltaValue?: number;
+        trailingActivationValue?: number;
+    }
+
+    interface Position {
+        positionId: string;
+        address: string;
+        pearExecutionFlag: string;
+        stopLoss: TpSlThreshold | null;
+        takeProfit: TpSlThreshold | null;
+        entryRatio: number;
+        markRatio: number;
+        entryPriceRatio?: number;
+        markPriceRatio?: number;
+        entryPositionValue: number;
+        positionValue: number;
+        marginUsed: number;
+        unrealizedPnl: number;
+        unrealizedPnlPercentage: number;
+        longAssets: PositionAssetDetail[];
+        shortAssets: PositionAssetDetail[];
+        createdAt: string;
+        updatedAt: string;
+    }
+
+    // Initialize from localStorage directly (only in browser)
+    const getInitialSession = (): SessionData | null => {
+        if (!browser) return null;
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+            try {
+                return JSON.parse(stored) as SessionData;
+            } catch {
+                localStorage.removeItem(STORAGE_KEY);
+            }
+        }
+        return null;
+    };
+
+    let error = $state("No error");
+    let session = $state<SessionData | null>(getInitialSession());
+    let orders = $state<Order[]>([]);
+    let positions = $state<Position[]>([]);
+    let closingPositionId = $state<string | null>(null);
+    let isCreatingPosition = $state(false);
+    let isApprovingBuilder = $state(false);
+    let builderApproved = $state(false);
+    let currentBuilderFeeRate = $state<string | null>(null);
+
+    const PEAR_BUILDER_ADDRESS = "0xA47D4d99191db54A4829cdf3de2417E527c3b042";
+    const REQUIRED_FEE_RATE = "0.1%";
+
+    // New position form state
+    let newPositionForm = $state({
+        longAsset: "BTC",
+        shortAsset: "ETH",
+        usdValue: 12,
+        leverage: 5,
+        slippage: 0.02,
+        executionType: "MARKET" as "SYNC" | "MARKET" | "TWAP",
+    });
+
+    // Fetch orders and positions on initial load if session exists
+    $effect(() => {
+        if (browser && session?.accessToken) {
+            fetchOrders(session.accessToken);
+            fetchPositions(session.accessToken);
+            checkBuilderApproved(session.walletAddress).then((approved) => {
+                builderApproved = approved;
+            });
         }
     });
 
-    async function handleConnectWallet() {
-        isLoading = true;
-        errorMessage = null;
-        try {
-            await auth.connectWallet();
-        } catch (err) {
-            // Error is handled in the store
-        } finally {
-            isLoading = false;
+    // Save session to localStorage
+    const saveSession = (data: SessionData) => {
+        session = data;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    };
+
+    // Clear session
+    const clearSession = () => {
+        session = null;
+        localStorage.removeItem(STORAGE_KEY);
+    };
+
+    // Create a wallet adapter for MetaMask that's compatible with the SDK
+    const createMetaMaskWallet = (address: string) => ({
+        address: address as `0x${string}`,
+        signTypedData: async (params: {
+            domain: Record<string, unknown>;
+            types: Record<string, { name: string; type: string }[]>;
+            primaryType: string;
+            message: Record<string, unknown>;
+        }) => {
+            const signature = await window.ethereum.request({
+                method: "eth_signTypedData_v4",
+                params: [
+                    address,
+                    JSON.stringify({
+                        domain: params.domain,
+                        types: {
+                            EIP712Domain: [
+                                { name: "name", type: "string" },
+                                { name: "version", type: "string" },
+                                { name: "chainId", type: "uint256" },
+                                { name: "verifyingContract", type: "address" },
+                            ],
+                            ...params.types,
+                        },
+                        primaryType: params.primaryType,
+                        message: params.message,
+                    }),
+                ],
+            });
+            return signature as `0x${string}`;
+        },
+    });
+
+    const getEIP712 = async (address: string) => {
+        const response = await fetch(
+            `https://hl-v2.pearprotocol.io/auth/eip712-message?address=${address}&clientId=${clientId}`,
+            {
+                method: "GET",
+                headers: {
+                    Accept: "*/*",
+                },
+            },
+        );
+
+        const data = await response.json();
+        return data;
+    };
+
+    const login = async (
+        address: string,
+        signature: string,
+        timestamp: number,
+    ) => {
+        const response = await fetch(
+            "https://hl-v2.pearprotocol.io/auth/login",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    method: "eip712",
+                    address: address,
+                    clientId: clientId,
+                    details: {
+                        signature: signature,
+                        timestamp: timestamp,
+                    },
+                }),
+            },
+        );
+
+        const data = await response.json();
+        return data;
+    };
+
+    const checkAgentWallet = async (token: string) => {
+        const response = await fetch(
+            "https://hl-v2.pearprotocol.io/agentWallet",
+            {
+                method: "GET",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: "*/*",
+                },
+            },
+        );
+
+        return await response.json();
+    };
+
+    const createAgentWallet = async (token: string) => {
+        const response = await fetch(
+            "https://hl-v2.pearprotocol.io/agentWallet",
+            {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: "*/*",
+                },
+            },
+        );
+
+        return await response.json();
+    };
+
+    // Check if agent is already approved on Hyperliquid
+    const checkAgentApproved = async (
+        userAddress: string,
+        agentAddress: string,
+    ): Promise<boolean> => {
+        const response = await fetch("https://api.hyperliquid.xyz/info", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                type: "extraAgents",
+                user: userAddress,
+            }),
+        });
+
+        const agents = await response.json();
+        console.log("Existing agents:", agents);
+
+        // Check if agentAddress is in the list of approved agents
+        if (!Array.isArray(agents)) {
+            return false;
         }
-    }
+        return agents.some(
+            (agent: { address: string; name: string; validUntil: number }) =>
+                agent.address.toLowerCase() === agentAddress.toLowerCase(),
+        );
+    };
 
-    async function handleLogin() {
-        isLoading = true;
-        errorMessage = null;
+    const approveAgentWallet = async (
+        walletAddress: string,
+        agentAddress: string,
+    ) => {
+        const wallet = createMetaMaskWallet(walletAddress);
+        const nonce = Date.now();
 
+        const action = {
+            type: "approveAgent" as const,
+            signatureChainId: "0xa4b1" as `0x${string}`, // Arbitrum
+            hyperliquidChain: "Mainnet" as const,
+            agentAddress: agentAddress.toLowerCase() as `0x${string}`,
+            agentName: "Pear Pool",
+            nonce,
+        };
+
+        // Sign using the SDK's signUserSignedAction
+        const signature = await signUserSignedAction({
+            wallet,
+            action,
+            types: ApproveAgentTypes,
+        });
+
+        // Send to Hyperliquid API
+        const response = await fetch("https://api.hyperliquid.xyz/exchange", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                action,
+                nonce,
+                signature,
+            }),
+        });
+
+        return await response.json();
+    };
+
+    const checkBuilderApproved = async (
+        userAddress: string,
+    ): Promise<boolean> => {
         try {
-            const address = $walletAddress;
-            if (!address) {
-                throw new Error("Wallet not connected");
-            }
-
-            // Create user if doesn't exist
-            await convex.mutation(api.auth.getOrCreateUser, {
-                walletAddress: address,
+            const response = await fetch("https://api.hyperliquid.xyz/info", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    type: "maxBuilderFee",
+                    user: userAddress,
+                    builder: PEAR_BUILDER_ADDRESS,
+                }),
             });
 
-            // Authenticate with Pear Protocol
-            const tokens = await auth.authenticateWithPear(async (tokens) => {
-                // Store tokens in Convex
-                await convex.mutation(api.auth.storePearTokens, {
-                    walletAddress: address,
-                    accessToken: tokens.accessToken,
-                    refreshToken: tokens.refreshToken,
-                    expiresIn: tokens.expiresIn,
-                });
+            const result = await response.json();
+            console.log("Builder approval status:", result);
+            // Result is a plain number in tenths of a basis point (e.g., 100 = 0.01%)
+            // Convert to percentage string for display
+            const rateInDecibps = typeof result === "number" ? result : 0;
+            const ratePercent = rateInDecibps / 1000; // Convert decibps to percentage
+            currentBuilderFeeRate =
+                rateInDecibps > 0 ? `${ratePercent}%` : null;
+            // Required rate is 0.1% = 100 decibps
+            const requiredDecibps = 100; // 0.1% in tenths of basis points
+            return rateInDecibps >= requiredDecibps;
+        } catch (err) {
+            console.error("Failed to check builder approval:", err);
+            return false;
+        }
+    };
+
+    const approveBuilder = async (walletAddress: string) => {
+        isApprovingBuilder = true;
+        try {
+            const wallet = createMetaMaskWallet(walletAddress);
+            const nonce = Date.now();
+
+            const action = {
+                type: "approveBuilderFee" as const,
+                signatureChainId: "0xa4b1" as `0x${string}`,
+                hyperliquidChain: "Mainnet" as const,
+                maxFeeRate: "0.1%",
+                builder: PEAR_BUILDER_ADDRESS.toLowerCase() as `0x${string}`,
+                nonce,
+            };
+
+            const signature = await signUserSignedAction({
+                wallet,
+                action,
+                types: {
+                    "HyperliquidTransaction:ApproveBuilderFee": [
+                        { name: "hyperliquidChain", type: "string" },
+                        { name: "maxFeeRate", type: "string" },
+                        { name: "builder", type: "address" },
+                        { name: "nonce", type: "uint64" },
+                    ],
+                },
             });
 
-            // Store access token for agent wallet setup
-            accessToken = tokens.accessToken;
+            const response = await fetch(
+                "https://api.hyperliquid.xyz/exchange",
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        action,
+                        nonce,
+                        signature,
+                    }),
+                },
+            );
 
-            // Check agent wallet status
-            await checkAgentWallet(tokens.accessToken);
-        } catch (err) {
-            errorMessage = err instanceof Error ? err.message : "Login failed";
-        } finally {
-            isLoading = false;
-        }
-    }
+            const result = await response.json();
+            console.log("Approve builder result:", result);
 
-    async function checkAgentWallet(token: string) {
-        try {
-            const wallet = await pear.getAgentWallet(token);
-
-            if (wallet.status === "ACTIVE") {
-                // Already have an active wallet
-                auth.updateAgentWalletStatus("ACTIVE");
-                await convex.mutation(api.auth.storeAgentWallet, {
-                    walletAddress: $walletAddress!,
-                    agentWalletAddress: wallet.address,
-                    status: "ACTIVE",
-                });
+            if (result.status === "ok") {
+                builderApproved = await checkBuilderApproved(walletAddress);
             } else {
-                // Need to create and approve
-                const newWallet = await pear.createAgentWallet(token);
-                agentWalletAddress = newWallet.address;
-                auth.updateAgentWalletStatus("NOT_FOUND");
+                error = result.response || "Failed to approve builder";
             }
-        } catch (err) {
-            // If 404, need to create wallet
-            if (err instanceof Error && err.message.includes("404")) {
-                const newWallet = await pear.createAgentWallet(token);
-                agentWalletAddress = newWallet.address;
-                auth.updateAgentWalletStatus("NOT_FOUND");
-            } else {
-                throw err;
-            }
-        }
-    }
 
-    async function handleApproveAgentWallet() {
-        isLoading = true;
-        errorMessage = null;
+            return result;
+        } catch (err) {
+            console.error("Failed to approve builder:", err);
+            error =
+                err instanceof Error
+                    ? err.message
+                    : "Failed to approve builder";
+        } finally {
+            isApprovingBuilder = false;
+        }
+    };
+
+    const getAddress = async () => {
+        if (typeof window.ethereum === "undefined") {
+            error = "MetaMask not installed";
+            return;
+        }
 
         try {
-            if (!agentWalletAddress) {
-                throw new Error("No agent wallet address");
-            }
-
-            await auth.approveAgentWallet(agentWalletAddress, async () => {
-                // Store in Convex after approval
-                await convex.mutation(api.auth.storeAgentWallet, {
-                    walletAddress: $walletAddress!,
-                    agentWalletAddress: agentWalletAddress!,
-                    status: "ACTIVE",
-                });
+            const accounts = await window.ethereum.request({
+                method: "eth_requestAccounts",
             });
 
-            // Navigate to lobby after successful approval
-            await goto("/lobby");
+            const walletAddress = accounts[0] as string;
+            const eip712 = await getEIP712(walletAddress);
+            console.log("EIP712 message:", eip712);
+
+            const typesWithDomain = {
+                EIP712Domain: [
+                    { name: "name", type: "string" },
+                    { name: "version", type: "string" },
+                    { name: "chainId", type: "uint256" },
+                    { name: "verifyingContract", type: "address" },
+                ],
+                ...eip712.types,
+            };
+
+            const signature = await window.ethereum.request({
+                method: "eth_signTypedData_v4",
+                params: [
+                    walletAddress,
+                    JSON.stringify({
+                        domain: eip712.domain,
+                        types: typesWithDomain,
+                        primaryType: eip712.primaryType,
+                        message: eip712.message,
+                    }),
+                ],
+            });
+
+            const authData = await login(
+                walletAddress,
+                signature as string,
+                eip712.message.timestamp,
+            );
+            console.log(authData);
+
+            let agentWallet = await checkAgentWallet(authData.accessToken);
+            if (agentWallet && Object.keys(agentWallet).length > 0) {
+                console.log("Agent wallet:", agentWallet);
+            } else {
+                console.log("No agent wallet found");
+                agentWallet = await createAgentWallet(authData.accessToken);
+                console.log("New agent wallet:", agentWallet);
+            }
+
+            // Check if agent is already approved on Hyperliquid
+            const isAlreadyApproved = await checkAgentApproved(
+                walletAddress,
+                agentWallet.agentWalletAddress,
+            );
+
+            if (isAlreadyApproved) {
+                console.log("Agent already approved!");
+                saveSession({
+                    walletAddress,
+                    agentWalletAddress: agentWallet.agentWalletAddress,
+                    accessToken: authData.accessToken,
+                    isAgentApproved: true,
+                });
+                // Check builder approval
+                const isBuilderApproved =
+                    await checkBuilderApproved(walletAddress);
+                builderApproved = isBuilderApproved;
+                return;
+            }
+
+            // Save session before attempting approval
+            saveSession({
+                walletAddress,
+                agentWalletAddress: agentWallet.agentWalletAddress,
+                accessToken: authData.accessToken,
+                isAgentApproved: false,
+            });
+
+            // Approve the agent wallet using the proper Hyperliquid SDK signing
+            const result = await approveAgentWallet(
+                walletAddress,
+                agentWallet.agentWalletAddress,
+            );
+            console.log("Approve agent result:", result);
+
+            // Update session if approval succeeded
+            if (result.status === "ok") {
+                saveSession({
+                    walletAddress,
+                    agentWalletAddress: agentWallet.agentWalletAddress,
+                    accessToken: authData.accessToken,
+                    isAgentApproved: true,
+                });
+            }
         } catch (err) {
-            errorMessage =
-                err instanceof Error ? err.message : "Approval failed";
-        } finally {
-            isLoading = false;
+            console.error(err);
+            error = err instanceof Error ? err.message : "Unknown error";
         }
-    }
+    };
 
-    async function handleDisconnect() {
-        await auth.disconnectWallet();
-        accessToken = null;
-        agentWalletAddress = null;
-    }
+    const spotOrder = async (token: string) => {
+        const response = await fetch(
+            "https://hl-v2.pearprotocol.io/orders/spot",
+            {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    asset: "USDH",
+                    isBuy: true,
+                    amount: 0.1,
+                }),
+            },
+        );
 
-    function shortenAddress(address: string): string {
-        return `${address.slice(0, 6)}...${address.slice(-4)}`;
-    }
+        return await response.json();
+    };
 
-    function goToLobby() {
-        goto("/lobby");
-    }
+    const fetchOrders = async (token: string) => {
+        try {
+            const response = await fetch(
+                "https://hl-v2.pearprotocol.io/orders/open",
+                {
+                    method: "GET",
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "*/*",
+                    },
+                },
+            );
+
+            const data = await response.json();
+            orders = Array.isArray(data) ? data : [];
+            console.log("Orders:", orders);
+        } catch (err) {
+            console.error("Failed to fetch orders:", err);
+            orders = [];
+        }
+    };
+
+    const fetchPositions = async (token: string) => {
+        try {
+            const response = await fetch(
+                "https://hl-v2.pearprotocol.io/positions",
+                {
+                    method: "GET",
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "*/*",
+                    },
+                },
+            );
+
+            const data = await response.json();
+            positions = Array.isArray(data) ? data : [];
+            console.log("Positions:", positions);
+        } catch (err) {
+            console.error("Failed to fetch positions:", err);
+            positions = [];
+        }
+    };
+
+    const closePosition = async (
+        token: string,
+        positionId: string,
+        executionType: "MARKET" | "TWAP" = "MARKET",
+    ) => {
+        closingPositionId = positionId;
+        try {
+            const response = await fetch(
+                `https://hl-v2.pearprotocol.io/positions/${positionId}/close`,
+                {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        executionType,
+                    }),
+                },
+            );
+
+            const data = await response.json();
+            console.log("Close position result:", data);
+            await fetchPositions(token);
+            return data;
+        } catch (err) {
+            console.error("Failed to close position:", err);
+            error =
+                err instanceof Error ? err.message : "Failed to close position";
+        } finally {
+            closingPositionId = null;
+        }
+    };
+
+    const closeAllPositions = async (
+        token: string,
+        executionType: "MARKET" | "TWAP" = "MARKET",
+    ) => {
+        try {
+            const response = await fetch(
+                "https://hl-v2.pearprotocol.io/positions/close-all",
+                {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        executionType,
+                    }),
+                },
+            );
+
+            const data = await response.json();
+            console.log("Close all positions result:", data);
+            await fetchPositions(token);
+            return data;
+        } catch (err) {
+            console.error("Failed to close all positions:", err);
+            error =
+                err instanceof Error
+                    ? err.message
+                    : "Failed to close all positions";
+        }
+    };
+
+    const createPosition = async (token: string) => {
+        isCreatingPosition = true;
+        try {
+            const requestBody = {
+                slippage: newPositionForm.slippage,
+                executionType: newPositionForm.executionType,
+                leverage: newPositionForm.leverage,
+                usdValue: newPositionForm.usdValue,
+                longAssets: [{ asset: newPositionForm.longAsset, weight: 0.5 }],
+                shortAssets: [
+                    { asset: newPositionForm.shortAsset, weight: 0.5 },
+                ],
+            };
+            console.log(
+                "Creating position with:",
+                JSON.stringify(requestBody, null, 2),
+            );
+
+            const response = await fetch(
+                "https://hl-v2.pearprotocol.io/positions",
+                {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify(requestBody),
+                },
+            );
+
+            const responseText = await response.text();
+            console.log("Raw response:", responseText);
+            console.log("Response status:", response.status);
+            const data = responseText ? JSON.parse(responseText) : {};
+            console.log("Create position result:", data);
+            if (data.orderId) {
+                await fetchPositions(token);
+            } else {
+                error = data.message || "Failed to create position";
+            }
+            return data;
+        } catch (err) {
+            console.error("Failed to create position:", err);
+            error =
+                err instanceof Error
+                    ? err.message
+                    : "Failed to create position";
+        } finally {
+            isCreatingPosition = false;
+        }
+    };
+
+    const formatPnl = (pnl: number): string => {
+        const sign = pnl >= 0 ? "+" : "";
+        return `${sign}$${pnl.toFixed(2)}`;
+    };
+
+    const formatPnlPercentage = (pnlPct: number): string => {
+        const sign = pnlPct >= 0 ? "+" : "";
+        return `${sign}${pnlPct.toFixed(2)}%`;
+    };
 </script>
 
-<div class="min-h-screen bg-background flex flex-col">
-    <header class="border-b">
-        <div
-            class="container mx-auto px-4 py-4 flex items-center justify-between"
+{#if session}
+    <div>
+        <p><strong>Wallet:</strong> {session.walletAddress}</p>
+        <p><strong>Agent Wallet:</strong> {session.agentWalletAddress}</p>
+        <p>
+            <strong>Agent Approved:</strong>
+            {session.isAgentApproved ? "Yes" : "No"}
+        </p>
+        {#if !session.isAgentApproved}
+            <button onclick={getAddress}>Retry Approve Agent</button>
+        {/if}
+        <p>
+            <strong>Builder Approved:</strong>
+            {builderApproved ? "Yes" : "No"}
+            (current rate: {currentBuilderFeeRate ?? "none"}, required: {REQUIRED_FEE_RATE})
+        </p>
+        {#if !builderApproved}
+            <button
+                onclick={() => approveBuilder(session.walletAddress)}
+                disabled={isApprovingBuilder}
+            >
+                {isApprovingBuilder ? "Approving..." : "Approve Pear Builder"}
+            </button>
+        {/if}
+        <button onclick={clearSession}>Disconnect</button>
+    </div>
+    <div>
+        <p><strong>Orders ({orders.length}):</strong></p>
+        {#if orders.length === 0}
+            <p>No open orders</p>
+        {:else}
+            {#each orders as order}
+                <p>
+                    <strong>ID:</strong>
+                    {order.id}
+                    <strong>Asset:</strong>
+                    {order.asset}
+                    <strong>Amount:</strong>
+                    {order.amount}
+                    <strong>Price:</strong>
+                    {order.price}
+                </p>
+            {/each}
+        {/if}
+        <button onclick={() => fetchOrders(session?.accessToken ?? "")}
+            >Refresh Orders</button
         >
-            <h1 class="text-2xl font-bold">
-                <a href="/">Pear Pool</a>
-            </h1>
-            <nav class="flex gap-4">
-                <Button variant="ghost" href="/how-it-works"
-                    >How it Works</Button
-                >
-            </nav>
-        </div>
-    </header>
-
-    <main
-        class="flex-1 container mx-auto px-4 py-12 flex flex-col lg:flex-row items-center gap-12"
+        <button
+            onclick={async () => {
+                if (session?.accessToken) {
+                    await spotOrder(session.accessToken);
+                    await fetchOrders(session.accessToken);
+                }
+            }}>Open simple spot</button
+        >
+    </div>
+    <div
+        style="border: 1px solid #666; padding: 15px; margin: 10px 0; border-radius: 5px;"
     >
-        <div class="flex-1 space-y-6">
-            <h2 class="text-4xl lg:text-5xl font-bold tracking-tight">
-                Compete. Trade. Win.
-            </h2>
-            <p class="text-xl text-muted-foreground max-w-lg">
-                Join the ultimate trading duel. Start with equal capital, trade
-                real markets via Hyperliquid, and climb the leaderboard to win
-                the prize pool.
-            </p>
-            <div class="flex justify-start">
-                <Button size="lg" variant="outline" href="/learn-more"
-                    >Learn More</Button
+        <p><strong>Open New Position</strong></p>
+        <div
+            style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;"
+        >
+            <label>
+                Long:
+                <input
+                    type="text"
+                    bind:value={newPositionForm.longAsset}
+                    placeholder="BTC"
+                    style="width: 80px;"
+                />
+            </label>
+            <label>
+                Short:
+                <input
+                    type="text"
+                    bind:value={newPositionForm.shortAsset}
+                    placeholder="ETH"
+                    style="width: 80px;"
+                />
+            </label>
+            <label>
+                USD Value:
+                <input
+                    type="number"
+                    bind:value={newPositionForm.usdValue}
+                    min="1"
+                    style="width: 80px;"
+                />
+            </label>
+            <label>
+                Leverage:
+                <input
+                    type="number"
+                    bind:value={newPositionForm.leverage}
+                    min="1"
+                    max="100"
+                    style="width: 60px;"
+                />
+            </label>
+            <label>
+                Slippage:
+                <select bind:value={newPositionForm.slippage}>
+                    <option value={0.005}>0.5%</option>
+                    <option value={0.01}>1%</option>
+                    <option value={0.02}>2%</option>
+                    <option value={0.05}>5%</option>
+                </select>
+            </label>
+            <label>
+                Type:
+                <select bind:value={newPositionForm.executionType}>
+                    <option value="SYNC">Sync</option>
+                    <option value="MARKET">Market</option>
+                    <option value="TWAP">TWAP</option>
+                </select>
+            </label>
+            <button
+                onclick={() => createPosition(session?.accessToken ?? "")}
+                disabled={isCreatingPosition}
+            >
+                {isCreatingPosition ? "Opening..." : "Open Position"}
+            </button>
+        </div>
+    </div>
+    <div>
+        <p><strong>Positions ({positions.length}):</strong></p>
+        {#if positions.length === 0}
+            <p>No open positions</p>
+        {:else}
+            {#each positions as position}
+                <div
+                    style="border: 1px solid #ccc; padding: 10px; margin: 10px 0; border-radius: 5px;"
                 >
-            </div>
-        </div>
-
-        <Card.Root class="w-full max-w-sm">
-            {#if currentStep === "ready"}
-                <!-- Ready to trade -->
-                <Card.Header>
-                    <Card.Title>Ready to Trade!</Card.Title>
-                    <Card.Description>
-                        Your wallet is connected and approved
-                    </Card.Description>
-                </Card.Header>
-                <Card.Content class="space-y-4">
-                    <div class="text-center space-y-2">
-                        <p class="text-muted-foreground font-mono text-sm">
-                            {$walletAddress
-                                ? shortenAddress($walletAddress)
-                                : ""}
-                        </p>
-                        <p class="text-muted-foreground text-xs">
-                            Agent Wallet: {agentWalletAddress
-                                ? shortenAddress(agentWalletAddress)
-                                : "Active"}
-                        </p>
-                    </div>
-                    <Button class="w-full" onclick={goToLobby}>
-                        Enter Lobby
-                    </Button>
-                    <Button
-                        variant="outline"
-                        class="w-full"
-                        onclick={handleDisconnect}
-                    >
-                        Disconnect
-                    </Button>
-                </Card.Content>
-            {:else if currentStep === "agent-wallet"}
-                <!-- Need to approve agent wallet -->
-                <Card.Header>
-                    <Card.Title>Approve Agent Wallet</Card.Title>
-                    <Card.Description>
-                        Pear Protocol needs permission to trade on your behalf
-                        via Hyperliquid
-                    </Card.Description>
-                </Card.Header>
-                <Card.Content class="space-y-4">
-                    {#if agentWalletAddress}
-                        <div
-                            class="p-2 bg-muted rounded text-xs font-mono text-center break-all"
+                    <p>
+                        <strong>Position ID:</strong>
+                        {position.positionId.slice(0, 8)}...
+                    </p>
+                    <p>
+                        <strong>Long:</strong>
+                        {position.longAssets
+                            .map(
+                                (a) => `${a.coin} (${a.actualSize.toFixed(4)})`,
+                            )
+                            .join(", ") || "None"}
+                    </p>
+                    <p>
+                        <strong>Short:</strong>
+                        {position.shortAssets
+                            .map(
+                                (a) => `${a.coin} (${a.actualSize.toFixed(4)})`,
+                            )
+                            .join(", ") || "None"}
+                    </p>
+                    <p>
+                        <strong>Position Value:</strong>
+                        ${position.positionValue.toFixed(2)}
+                        <strong style="margin-left: 10px;">Margin Used:</strong>
+                        ${position.marginUsed.toFixed(2)}
+                    </p>
+                    <p>
+                        <strong>Unrealized PnL:</strong>
+                        <span
+                            style="color: {position.unrealizedPnl >= 0
+                                ? 'green'
+                                : 'red'}"
                         >
-                            {agentWalletAddress}
-                        </div>
-                    {/if}
-
-                    {#if errorMessage}
-                        <div
-                            class="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-md"
-                        >
-                            {errorMessage}
-                        </div>
-                    {/if}
-
-                    <Button
-                        class="w-full"
-                        onclick={handleApproveAgentWallet}
-                        disabled={isLoading}
-                    >
-                        {isLoading ? "Approving..." : "Approve on Hyperliquid"}
-                    </Button>
-                    <Button
-                        variant="ghost"
-                        class="w-full"
-                        onclick={handleDisconnect}
-                    >
-                        Disconnect Wallet
-                    </Button>
-                </Card.Content>
-            {:else if currentStep === "authenticate"}
-                <!-- Connected but not authenticated -->
-                <Card.Header>
-                    <Card.Title>Sign In</Card.Title>
-                    <Card.Description>
-                        Sign a message to authenticate with Pear Protocol
-                    </Card.Description>
-                </Card.Header>
-                <Card.Content class="space-y-4">
-                    <div class="text-center">
-                        <p class="text-muted-foreground mb-2">
-                            Wallet Connected
+                            {formatPnl(position.unrealizedPnl)} ({formatPnlPercentage(
+                                position.unrealizedPnlPercentage,
+                            )})
+                        </span>
+                    </p>
+                    <p>
+                        <strong>Entry Ratio:</strong>
+                        {position.entryRatio.toFixed(4)}
+                        <strong style="margin-left: 10px;">Mark Ratio:</strong>
+                        {position.markRatio.toFixed(4)}
+                    </p>
+                    {#if position.stopLoss}
+                        <p>
+                            <strong>Stop Loss:</strong>
+                            {position.stopLoss.type} @ {position.stopLoss.value}
+                            {position.stopLoss.isTrailing ? "(Trailing)" : ""}
                         </p>
-                        <p class="font-mono text-sm">
-                            {$walletAddress
-                                ? shortenAddress($walletAddress)
-                                : ""}
+                    {/if}
+                    {#if position.takeProfit}
+                        <p>
+                            <strong>Take Profit:</strong>
+                            {position.takeProfit.type} @ {position.takeProfit
+                                .value}
+                            {position.takeProfit.isTrailing ? "(Trailing)" : ""}
                         </p>
-                    </div>
-
-                    {#if errorMessage}
-                        <div
-                            class="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-md"
-                        >
-                            {errorMessage}
-                        </div>
                     {/if}
-
-                    <Button
-                        class="w-full"
-                        onclick={handleLogin}
-                        disabled={isLoading}
+                    <p>
+                        <strong>Created:</strong>
+                        {new Date(position.createdAt).toLocaleString()}
+                    </p>
+                    <button
+                        onclick={() =>
+                            closePosition(
+                                session?.accessToken ?? "",
+                                position.positionId,
+                            )}
+                        disabled={closingPositionId === position.positionId}
                     >
-                        {isLoading
-                            ? "Signing..."
-                            : "Sign in with Pear Protocol"}
-                    </Button>
-                    <Button
-                        variant="ghost"
-                        class="w-full"
-                        onclick={handleDisconnect}
-                    >
-                        Disconnect Wallet
-                    </Button>
-                </Card.Content>
-            {:else}
-                <!-- Not connected -->
-                <Card.Header>
-                    <Card.Title>Connect Your Wallet</Card.Title>
-                    <Card.Description>
-                        Connect your wallet to start trading
-                    </Card.Description>
-                </Card.Header>
-                <Card.Content class="space-y-4">
-                    {#if errorMessage}
-                        <div
-                            class="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-md"
-                        >
-                            {errorMessage}
-                        </div>
-                    {/if}
-
-                    <Button
-                        class="w-full"
-                        onclick={handleConnectWallet}
-                        disabled={isLoading}
-                    >
-                        {isLoading ? "Connecting..." : "Connect Wallet"}
-                    </Button>
-                </Card.Content>
-            {/if}
-
-            <!-- Progress indicator -->
-            <Card.Footer class="flex justify-center gap-2">
-                {#each ["connect", "authenticate", "agent-wallet", "ready"] as step, i}
-                    <div
-                        class="w-2 h-2 rounded-full {currentStep === step
-                            ? 'bg-primary'
-                            : [
-                                    'connect',
-                                    'authenticate',
-                                    'agent-wallet',
-                                    'ready',
-                                ].indexOf(currentStep) > i
-                              ? 'bg-primary/60'
-                              : 'bg-muted'}"
-                    ></div>
-                {/each}
-            </Card.Footer>
-        </Card.Root>
-    </main>
-
-    <footer class="border-t py-6">
-        <div class="container mx-auto px-4 text-center text-muted-foreground">
-            <p>Built with Pear Protocol & Hyperliquid</p>
-        </div>
-    </footer>
-</div>
+                        {closingPositionId === position.positionId
+                            ? "Closing..."
+                            : "Close Position (Market)"}
+                    </button>
+                </div>
+            {/each}
+        {/if}
+        <button onclick={() => fetchPositions(session?.accessToken ?? "")}
+            >Refresh Positions</button
+        >
+        {#if positions.length > 0}
+            <button
+                onclick={() => closeAllPositions(session?.accessToken ?? "")}
+                >Close All Positions</button
+            >
+        {/if}
+    </div>
+{:else}
+    <button onclick={getAddress}>Connect & Create Agent</button>
+{/if}
+<p>{error}</p>
