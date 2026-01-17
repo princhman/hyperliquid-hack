@@ -4,7 +4,7 @@
     import { Input } from '$lib/components/ui/input';
     import { Label } from '$lib/components/ui/label';
     import { convex, api } from '$lib/convex';
-    import { sendUSDC } from '../buyIn/buyIn';
+    import { sendUSDC } from '../convex/buyIn/buyIn';
 
     let isConnecting = $state(false);
     let isSavingUsername = $state(false);
