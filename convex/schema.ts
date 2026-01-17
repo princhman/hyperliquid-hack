@@ -18,7 +18,7 @@ export default defineSchema({
     .index("by_wallet", ["walletAddress"])
     .index("by_username", ["username"]),
 
-  sessions: defineTable({
+  auth_sessions: defineTable({
     userId: v.id("users"),
     token: v.string(),
     expiresAt: v.number(),
@@ -32,7 +32,9 @@ export default defineSchema({
     status: v.string(), // "waiting" | "active" | "finished"
     maxPlayers: v.number(),
     startingCapital: v.number(), // Starting capital for each player (notional)
+    entryFee: v.number(), // Entry fee for each player
     prizePool: v.number(),
+    prizeDistribution: v.string(), // "winner-takes-all", "top-3", "top-5"
     durationMinutes: v.number(),
     tradingPairs: v.array(v.string()), // e.g., ["BTC-PERP", "ETH-PERP"]
     startedAt: v.optional(v.number()),
@@ -49,6 +51,7 @@ export default defineSchema({
     joinedAt: v.number(),
     currentPnL: v.number(), // Current profit/loss
     totalTrades: v.number(),
+    investedAmount: v.number(), // Total amount invested (accumulated trade sizes)
     isActive: v.boolean(),
   })
     .index("by_game", ["gameId"])

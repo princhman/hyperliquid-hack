@@ -3,11 +3,12 @@
 	import * as Card from "$lib/components/ui/card";
 	import { Input } from "$lib/components/ui/input";
 	import { Label } from "$lib/components/ui/label";
-	import pearPoolLogo from "$lib/assets/logo-no-bg.jpg";
+	import pearPoolLogo from "$lib/assets/logo-bg-removebg-preview.png";
 	import { convex, api } from "$lib/convex";
+	import { auth } from "$lib/stores/auth";
 	import { onMount } from "svelte";
 	import { goto } from "$app/navigation";
-	import type { Id } from "../../convex/_generated/dataModel";
+	import type { Id } from "../../../convex/_generated/dataModel";
 
 	// State
 	let walletAddress = $state<string | null>(null);
@@ -18,13 +19,16 @@
 	let isCreating = $state(false);
 	let isJoining = $state<string | null>(null);
 	let error = $state<string | null>(null);
+	let showHowItWorks = $state(false);
+	let showProfileMenu = $state(false);
 
 	// Create game form
 	let gameName = $state("");
 	let gameDescription = $state("");
 	let maxPlayers = $state(10);
 	let startingCapital = $state(10000);
-	let prizePool = $state(1000);
+	let entryFee = $state(100);
+	let prizeDistribution = $state("winner-takes-all");
 	let durationMinutes = $state(60);
 
 	onMount(async () => {
@@ -65,7 +69,8 @@
 				description: gameDescription.trim() || undefined,
 				maxPlayers,
 				startingCapital,
-				prizePool,
+				entryFee,
+				prizeDistribution,
 				durationMinutes,
 				tradingPairs: [], // Players select their own coins in-game
 			});
@@ -132,7 +137,8 @@
 		gameDescription = "";
 		maxPlayers = 10;
 		startingCapital = 10000;
-		prizePool = 1000;
+		entryFee = 100;
+		prizeDistribution = "winner-takes-all";
 		durationMinutes = 60;
 	}
 
@@ -161,33 +167,54 @@
 		return userGames.some((g) => g._id === game._id && g.creatorId === game.creatorId);
 	}
 
-	function handleLogout() {
+	async function handleLogout() {
+		await auth.disconnectWallet();
 		localStorage.removeItem("walletAddress");
 		localStorage.removeItem("token");
 		goto("/");
 	}
 </script>
 
-<div class="min-h-screen bg-background flex flex-col">
-	<header class="border-b">
-		<div class="container mx-auto px-4 py-4 flex items-center justify-between">
-			<div class="flex items-center">
-				<img src={pearPoolLogo} alt="Pear Pool Logo" class="h-12 w-12 mr-3 object-contain" />
-				<h1 class="text-2xl font-bold leading-none">
-					<a href="/">Pear Pool</a>
-				</h1>
-			</div>
-			<nav class="flex gap-4">
-				<Button variant="ghost" href="/how-it-works">How it Works</Button>
-				<Button variant="ghost" href="/lobby">Lobby</Button>
-				<Button variant="ghost" href="/profile">Profile</Button>
-				<Button variant="outline" onclick={handleLogout}>Logout</Button>
-			</nav>
-		</div>
-	</header>
+<div class="min-h-screen bg-background flex flex-col relative">
+	<div class="absolute top-4 right-4 z-50">
+		<button
+			class="w-10 h-10 rounded-full bg-secondary overflow-hidden hover:ring-2 hover:ring-primary transition-all focus:outline-none flex items-center justify-center"
+			onclick={() => (showProfileMenu = !showProfileMenu)}
+		>
+			<svg
+				xmlns="http://www.w3.org/2000/svg"
+				viewBox="0 0 24 24"
+				fill="currentColor"
+				class="w-6 h-6 text-green-500"
+			>
+				<path
+					fill-rule="evenodd"
+					d="M7.5 6a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0ZM3.751 20.105a8.25 8.25 0 0 1 16.498 0 .75.75 0 0 1-.437.695A18.683 18.683 0 0 1 12 22.5c-2.786 0-5.433-.608-7.812-1.7a.75.75 0 0 1-.437-.695Z"
+					clip-rule="evenodd"
+				/>
+			</svg>
+		</button>
 
-	<main class="flex-1 container mx-auto px-4 py-12">
-		<div class="space-y-8">
+		{#if showProfileMenu}
+			<div class="absolute right-0 mt-2 w-48 bg-card border rounded-lg shadow-lg py-1 z-50">
+				<a
+					href="/profile"
+					class="block px-4 py-2 text-sm hover:bg-secondary w-full text-left transition-colors"
+				>
+					Profile
+				</a>
+				<button
+					onclick={handleLogout}
+					class="block px-4 py-2 text-sm text-red-500 hover:bg-secondary w-full text-left transition-colors"
+				>
+					Logout
+				</button>
+			</div>
+		{/if}
+	</div>
+
+	<main class="flex-1 w-full max-w-5xl mx-auto px-4 py-8 md:py-12">
+		<div class="space-y-6 md:space-y-8">
 			<div class="flex items-center justify-between">
 				<h2 class="text-3xl font-bold tracking-tight">Game Lobby</h2>
 				<Button onclick={() => (showCreateModal = true)}>Create New Game</Button>
@@ -209,42 +236,22 @@
 						<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
 							{#each userGames.filter((g) => g.status === "active") as game}
 								<Card.Root class="border-green-500/50">
-									<Card.Header>
-										<Card.Title>{game.name}</Card.Title>
-										<Card.Description>
-											<span class="inline-flex items-center gap-1.5">
-												<span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-												Live
-											</span>
-										</Card.Description>
-									</Card.Header>
-									<Card.Content>
-										<div class="space-y-2 text-sm">
-											<div class="flex justify-between">
-												<span class="text-muted-foreground">Your P&L</span>
-												<span
-													class="font-medium {game.myPnL >= 0
-														? 'text-green-500'
-														: 'text-red-500'}"
-												>
-													{game.myPnL >= 0 ? "+" : ""}${game.myPnL.toLocaleString()}
-												</span>
-											</div>
-											<div class="flex justify-between">
-												<span class="text-muted-foreground">Time Left</span>
-												<span class="font-medium">{formatTimeLeft(game.endsAt)}</span>
-											</div>
-											<div class="flex justify-between">
-												<span class="text-muted-foreground">Prize Pool</span>
-												<span class="font-medium text-green-500"
-													>${game.prizePool.toLocaleString()}</span
-												>
-											</div>
+									<div class="p-4">
+										<div class="flex items-center justify-between mb-4">
+											<h3 class="text-2xl font-bold leading-none">{game.name}</h3>
+											<span class="text-lg text-muted-foreground">{formatTimeLeft(game.endsAt)}</span>
 										</div>
-									</Card.Content>
-									<Card.Footer>
-										<Button class="w-full" href="/game/{game._id}">Enter Game</Button>
-									</Card.Footer>
+										<div class="flex items-center justify-between gap-3">
+											<span
+												class="font-medium text-lg {game.myPnL >= 0
+													? 'text-green-500'
+													: 'text-red-500'}"
+											>
+												{game.myPnL >= 0 ? "+" : ""}${game.myPnL.toLocaleString()}
+											</span>
+											<Button size="sm" class="h-7 text-xs px-4" href="/game/{game._id}">Enter Game</Button>
+										</div>
+									</div>
 								</Card.Root>
 							{/each}
 						</div>
@@ -282,7 +289,7 @@
 										<div class="flex justify-between">
 											<span class="text-muted-foreground">Prize Pool</span>
 											<span class="font-medium text-green-500"
-												>${game.prizePool.toLocaleString()}</span
+												>${(game.entryFee * game.participantCount).toLocaleString()}</span
 											>
 										</div>
 										<div class="flex justify-between">
@@ -294,12 +301,6 @@
 													? formatTimeLeft(game.endsAt)
 													: formatDuration(game.durationMinutes)}
 											</span>
-										</div>
-										<div class="flex justify-between">
-											<span class="text-muted-foreground">Starting Capital</span>
-											<span class="font-medium"
-												>${game.startingCapital.toLocaleString()}</span
-											>
 										</div>
 										<div class="mt-2">
 											
@@ -401,16 +402,6 @@
 
 						<div class="grid grid-cols-2 gap-4">
 							<div class="space-y-2">
-								<Label for="maxPlayers">Max Players</Label>
-								<Input
-									id="maxPlayers"
-									type="number"
-									min="2"
-									max="100"
-									bind:value={maxPlayers}
-								/>
-							</div>
-							<div class="space-y-2">
 								<Label for="duration">Duration (minutes)</Label>
 								<Input
 									id="duration"
@@ -420,22 +411,27 @@
 									bind:value={durationMinutes}
 								/>
 							</div>
+							<div class="space-y-2">
+								<Label for="entryFee">Initial Investment / Buy-in ($)</Label>
+								<Input id="entryFee" type="number" min="0" bind:value={entryFee} />
+							</div>
 						</div>
 
-						<div class="grid grid-cols-2 gap-4">
-							<div class="space-y-2">
-								<Label for="capital">Starting Capital ($)</Label>
-								<Input
-									id="capital"
-									type="number"
-									min="100"
-									bind:value={startingCapital}
-								/>
-							</div>
-							<div class="space-y-2">
-								<Label for="prize">Prize Pool ($)</Label>
-								<Input id="prize" type="number" min="0" bind:value={prizePool} />
-							</div>
+						<div class="space-y-2">
+							<Label for="prizeDistribution">Prize Pool Split</Label>
+							<select
+								id="prizeDistribution"
+								class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+								bind:value={prizeDistribution}
+							>
+								<option value="winner-takes-all">Winner Takes All (100% to 1st)</option>
+								<option value="top-3">Top 3 (50% / 30% / 20%)</option>
+								<option value="top-5">Top 5 (40% / 25% / 15% / 10% / 10%)</option>
+								<option value="proportional">Proportional (Based on +PnL share)</option>
+							</select>
+							<p class="text-[0.8rem] text-muted-foreground">
+								The total prize pool is the sum of all buy-ins.
+							</p>
 						</div>
 
 						<div class="flex gap-2 pt-4">
@@ -457,6 +453,53 @@
 						</div>
 					</form>
 				</Card.Content>
+			</Card.Root>
+		</div>
+	{/if}
+
+	<!-- How It Works Modal -->
+	{#if showHowItWorks}
+		<div
+			class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+			onclick={() => (showHowItWorks = false)}
+		>
+			<Card.Root
+				class="w-full max-w-3xl max-h-[90vh] overflow-y-auto"
+				onclick={(e: MouseEvent) => e.stopPropagation()}
+			>
+				<Card.Header class="flex flex-row items-center justify-between">
+					<Card.Title class="text-2xl">How It Works</Card.Title>
+					<Button variant="ghost" size="sm" onclick={() => (showHowItWorks = false)}>
+						✕
+					</Button>
+				</Card.Header>
+				<Card.Content class="space-y-6">
+					<div class="grid gap-6">
+						<div class="border rounded-lg p-4">
+							<h3 class="font-semibold text-lg mb-2">1. Join a Game</h3>
+							<p class="text-muted-foreground">
+								Connect your wallet and join an active trading competition. Everyone starts with the same notional capital.
+							</p>
+						</div>
+
+						<div class="border rounded-lg p-4">
+							<h3 class="font-semibold text-lg mb-2">2. Trade Pairs</h3>
+							<p class="text-muted-foreground">
+								Execute pair trades on real markets via Hyperliquid. Go long on one asset while shorting another to profit from relative price movements.
+							</p>
+						</div>
+
+						<div class="border rounded-lg p-4">
+							<h3 class="font-semibold text-lg mb-2">3. Win the Pool</h3>
+							<p class="text-muted-foreground">
+								At the end of each game, the top-performing trader wins a share of the prize pool based on their PnL.
+							</p>
+						</div>
+					</div>
+				</Card.Content>
+				<Card.Footer>
+					<Button class="w-full" onclick={() => (showHowItWorks = false)}>Close</Button>
+				</Card.Footer>
 			</Card.Root>
 		</div>
 	{/if}

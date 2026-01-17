@@ -7,15 +7,12 @@ export const listGames = query({
     status: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    let gamesQuery = ctx.db.query("games");
-
-    if (args.status) {
-      gamesQuery = gamesQuery.withIndex("by_status", (q) =>
-        q.eq("status", args.status!)
-      );
-    }
-
-    const games = await gamesQuery.collect();
+    const games = args.status
+      ? await ctx.db
+          .query("games")
+          .withIndex("by_status", (q) => q.eq("status", args.status!))
+          .collect()
+      : await ctx.db.query("games").collect();
 
     // Get participant counts for each game
     const gamesWithParticipants = await Promise.all(
@@ -74,7 +71,62 @@ export const getGame = query({
       ...game,
       participants: participantsWithDetails,
       creatorName: creator?.username || creator?.walletAddress.slice(0, 8),
+      creatorWalletAddress: creator?.walletAddress,
     };
+  },
+});
+
+// Delete a game (only creator can delete)
+export const deleteGame = mutation({
+  args: {
+    walletAddress: v.string(),
+    gameId: v.id("games"),
+  },
+  handler: async (ctx, args) => {
+    const normalizedAddress = args.walletAddress.toLowerCase();
+
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_wallet", (q) => q.eq("walletAddress", normalizedAddress))
+      .first();
+
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    const game = await ctx.db.get(args.gameId);
+    if (!game) {
+      throw new Error("Game not found");
+    }
+
+    if (game.creatorId !== user._id) {
+      throw new Error("Only the creator can delete the game");
+    }
+
+    // Delete all participants
+    const participants = await ctx.db
+      .query("gameParticipants")
+      .withIndex("by_game", (q) => q.eq("gameId", args.gameId))
+      .collect();
+
+    for (const p of participants) {
+      await ctx.db.delete(p._id);
+    }
+
+    // Delete all trades
+    const trades = await ctx.db
+      .query("gameTrades")
+      .withIndex("by_game", (q) => q.eq("gameId", args.gameId))
+      .collect();
+
+    for (const t of trades) {
+      await ctx.db.delete(t._id);
+    }
+
+    // Delete the game
+    await ctx.db.delete(args.gameId);
+
+    return { success: true };
   },
 });
 
@@ -86,7 +138,8 @@ export const createGame = mutation({
     description: v.optional(v.string()),
     maxPlayers: v.number(),
     startingCapital: v.number(),
-    prizePool: v.number(),
+    entryFee: v.number(),
+    prizeDistribution: v.string(),
     durationMinutes: v.number(),
     tradingPairs: v.array(v.string()),
   },
@@ -109,7 +162,9 @@ export const createGame = mutation({
       status: "waiting",
       maxPlayers: args.maxPlayers,
       startingCapital: args.startingCapital,
-      prizePool: args.prizePool,
+      entryFee: args.entryFee,
+      prizePool: args.entryFee, // Initial prize pool is 1 entry fee
+      prizeDistribution: args.prizeDistribution,
       durationMinutes: args.durationMinutes,
       tradingPairs: args.tradingPairs,
       createdAt: Date.now(),
@@ -122,6 +177,7 @@ export const createGame = mutation({
       joinedAt: Date.now(),
       currentPnL: 0,
       totalTrades: 0,
+      investedAmount: 0,
       isActive: true,
     });
 
@@ -178,12 +234,19 @@ export const joinGame = mutation({
       throw new Error("Game is full");
     }
 
+    // Update prize pool
+    const entryFee = game.entryFee || 0; // fallback if entryFee wasn't set
+    await ctx.db.patch(game._id, {
+        prizePool: (game.prizePool || 0) + entryFee
+    });
+
     await ctx.db.insert("gameParticipants", {
       gameId: args.gameId,
       userId: user._id,
       joinedAt: Date.now(),
       currentPnL: 0,
       totalTrades: 0,
+      investedAmount: 0,
       isActive: true,
     });
 
@@ -228,6 +291,15 @@ export const leaveGame = mutation({
     if (!participant) {
       throw new Error("Not in this game");
     }
+
+    // Update prize pool
+    const entryFee = game.entryFee || 0;
+    // Don't let it go below 0 (shouldn't happen)
+    const newPrizePool = Math.max(0, (game.prizePool || 0) - entryFee);
+    
+    await ctx.db.patch(game._id, {
+        prizePool: newPrizePool
+    });
 
     await ctx.db.delete(participant._id);
 
@@ -292,6 +364,7 @@ export const updateParticipantPnL = mutation({
     gameId: v.id("games"),
     walletAddress: v.string(),
     pnlDelta: v.number(),
+    investmentDelta: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const normalizedAddress = args.walletAddress.toLowerCase();
@@ -316,9 +389,12 @@ export const updateParticipantPnL = mutation({
       throw new Error("Not a participant in this game");
     }
 
+    const newInvestedAmount = Math.max(0, (participant.investedAmount || 0) + (args.investmentDelta || 0));
+
     await ctx.db.patch(participant._id, {
       currentPnL: participant.currentPnL + args.pnlDelta,
       totalTrades: participant.totalTrades + 1,
+      investedAmount: newInvestedAmount,
     });
 
     return { success: true };
@@ -346,6 +422,7 @@ export const getLeaderboard = query({
           walletAddress: user?.walletAddress,
           pnl: p.currentPnL,
           totalTrades: p.totalTrades,
+          investedAmount: p.investedAmount || 0,
         };
       })
     );

@@ -3,7 +3,7 @@
 	import * as Card from "$lib/components/ui/card";
 	import { Input } from "$lib/components/ui/input";
 	import { Label } from "$lib/components/ui/label";
-	import pearPoolLogo from "$lib/assets/logo-no-bg.jpg";
+	import pearPoolLogo from "$lib/assets/logo-bg-removebg-preview.png";
 	import { convex, api } from "$lib/convex";
 	import { onMount, onDestroy, tick } from "svelte";
 	import { goto } from "$app/navigation";
@@ -184,8 +184,43 @@
 	let game = $state<any>(null);
 	let leaderboard = $state<any[]>([]);
 	let walletAddress = $state<string | null>(null);
+
+	let displayedLeaderboard = $derived.by(() => {
+		if (!leaderboard || leaderboard.length === 0) return [];
+		
+		const withRank = leaderboard.map((p, i) => ({ 
+			...p, 
+			rank: i + 1,
+			isUser: walletAddress && p.walletAddress?.toLowerCase() === walletAddress?.toLowerCase()
+		}));
+
+		const top3 = withRank.slice(0, 3);
+		
+		if (!walletAddress) return top3;
+		
+		const userEntry = withRank.find(p => p.isUser);
+		
+		if (!userEntry || userEntry.rank <= 3) {
+			return top3;
+		}
+		
+		return [...top3, userEntry];
+	});
+
+	let prizePool = $derived(leaderboard.reduce((acc, p) => acc + (p.pnl || 0), 0));
+
+	let currentBalance = $derived.by(() => {
+		if (!game || !walletAddress) return 0;
+		const myEntry = leaderboard.find(
+			(p) => p.walletAddress?.toLowerCase() === walletAddress?.toLowerCase()
+		);
+		// Available Balance = Starting Capital + Realized PnL - Invested Amount
+		return (game.startingCapital || 0) + (myEntry?.pnl || 0) - (myEntry?.investedAmount || 0);
+	});
+
 	let isLoading = $state(true);
 	let error = $state<string | null>(null);
+	let showLeaderboardModal = $state(false);
 
 	// Available coins from Pear Protocol
 	let availableCoins = $state<string[]>([]);
@@ -260,6 +295,43 @@
 		{ label: "3D", hours: 72 },
 		{ label: "1W", hours: 168 },
 	];
+
+	function getIntervalMinutes(interval: string): number {
+		if (interval === "5m") return 5;
+		if (interval === "15m") return 15;
+		if (interval === "1h") return 60;
+		if (interval === "4h") return 240;
+		return 15;
+	}
+
+	function isIntervalValid(interval: string, rangeHours: number): boolean {
+		const rangeMinutes = rangeHours * 60;
+		const intervalMinutes = getIntervalMinutes(interval);
+		// Require at least 4 bars for a meaningful chart
+		return rangeMinutes >= intervalMinutes * 4;
+	}
+
+	function handleRangeChange(hours: number) {
+		chartTimeRange = hours;
+		
+		// Auto-adjust interval if current one is invalid
+		if (!isIntervalValid(chartInterval, hours)) {
+			// Find largest valid interval
+			const intervals = ["5m", "15m", "1h", "4h"];
+			const validIntervals = intervals.filter(i => isIntervalValid(i, hours));
+			
+			if (validIntervals.length > 0) {
+				// Pick the largest valid interval (last one in list) to keep chart "zoomed out" properly
+				// or Pick the one closest to current?
+				// Simple heuristic: pick largest valid one.
+				chartInterval = validIntervals[validIntervals.length - 1] as any;
+			} else {
+				chartInterval = "5m";
+			}
+		}
+
+		if (selectedPair) loadChart(selectedPair, chartInterval);
+	}
 
 	// Crosshair state for mouse tracking
 	let crosshairX = $state<number | null>(null);
@@ -359,8 +431,19 @@
 		const ctx = chartCanvas.getContext("2d");
 		if (!ctx) return;
 
-		const width = chartCanvas.width;
-		const height = chartCanvas.height;
+		// Handle High DPI scaling
+		const dpr = window.devicePixelRatio || 1;
+		const rect = chartCanvas.getBoundingClientRect();
+
+		// Set actual size in memory (scaled to account for extra pixel density)
+		chartCanvas.width = rect.width * dpr;
+		chartCanvas.height = rect.height * dpr;
+
+		// Normalize coordinate system to use css pixels.
+		ctx.scale(dpr, dpr);
+
+		const width = rect.width;
+		const height = rect.height;
 		const padding = { top: 20, right: 70, bottom: 30, left: 10 };
 		const chartWidth = width - padding.left - padding.right;
 		const chartHeight = height - padding.top - padding.bottom;
@@ -608,6 +691,7 @@
 				gameId: game._id,
 				walletAddress,
 				pnlDelta: simulatedPnL,
+				investmentDelta: tradeSize,
 			});
 			
 			await loadGame();
@@ -634,6 +718,27 @@
 		return participant?.pnl || 0;
 	}
 
+	let isOwner = $derived(
+		game?.creatorWalletAddress && 
+		walletAddress && 
+		game.creatorWalletAddress.toLowerCase() === walletAddress.toLowerCase()
+	);
+
+	async function handleDeleteGame() {
+		if (!confirm("Are you sure you want to delete this game? This action cannot be undone.")) return;
+		
+		try {
+			await convex.mutation(api.games.deleteGame, {
+				gameId: game._id,
+				walletAddress: walletAddress!
+			});
+			goto("/lobby");
+		} catch (err) {
+			console.error("Failed to delete game:", err);
+			alert("Failed to delete game: " + (err instanceof Error ? err.message : String(err)));
+		}
+	}
+
 	function handleLogout() {
 		localStorage.removeItem("walletAddress");
 		localStorage.removeItem("token");
@@ -651,21 +756,23 @@
 <div class="min-h-screen bg-background flex flex-col">
 	<header class="border-b">
 		<div class="container mx-auto px-4 py-4 flex items-center justify-between">
-			<div class="flex items-center">
-				<img src={pearPoolLogo} alt="Pear Pool Logo" class="h-12 w-12 mr-3 object-contain" />
-				<h1 class="text-2xl font-bold leading-none">
-					<a href="/">Pear Pool</a>
-				</h1>
+			<div class="flex items-center gap-8">
+				<div class="flex items-center">
+					<img src={pearPoolLogo} alt="Pear Pool Logo" class="h-12 w-12 mr-1 object-contain" />
+					<h1 class="text-xl font-light font-serif leading-none">
+						<a href="/">Pear Pool</a>
+					</h1>
+				</div>
+				<nav class="flex gap-4">
+					<Button variant="ghost" href="/lobby">Back to Lobby</Button>
+					<Button variant="ghost" href="/profile">Profile</Button>
+				</nav>
 			</div>
-			<nav class="flex gap-4">
-				<Button variant="ghost" href="/lobby">Back to Lobby</Button>
-				<Button variant="ghost" href="/profile">Profile</Button>
-				<Button variant="outline" onclick={handleLogout}>Logout</Button>
-			</nav>
+			<Button variant="outline" onclick={handleLogout}>Logout</Button>
 		</div>
 	</header>
 
-	<main class="flex-1 container mx-auto px-4 py-8">
+	<main class="flex-1 w-full max-w-5xl mx-auto px-4 py-8 md:py-12">
 		{#if isLoading}
 			<div class="text-center py-12 text-muted-foreground">Loading game...</div>
 		{:else if error && !game}
@@ -683,36 +790,76 @@
 							<p class="text-muted-foreground mt-1">{game.description}</p>
 						{/if}
 					</div>
-					<div class="text-right">
-						<div class="text-3xl font-bold tabular-nums">{timeLeft}</div>
-						<div class="text-sm text-muted-foreground">Time Remaining</div>
+					<div class="flex flex-col items-end gap-2">
+						<div class="text-right">
+							<div class="text-3xl font-bold tabular-nums">{timeLeft}</div>
+							<div class="text-sm text-muted-foreground">Time Remaining</div>
+						</div>
+						{#if isOwner}
+							<Button 
+								variant="destructive" 
+								size="sm" 
+								class="mt-2"
+								onclick={handleDeleteGame}
+							>
+								Delete Game
+							</Button>
+						{/if}
 					</div>
 				</div>
 
-				<!-- Stats Bar -->
-				<div class="grid grid-cols-4 gap-4 justify-center">
-					
-					<Card.Root>
-						<Card.Content class="pt-6">
-							<div class="text-2xl font-bold {getMyPnL() >= 0 ? 'text-green-500' : 'text-red-500'}">
-								{getMyPnL() >= 0 ? '+' : ''}${getMyPnL().toFixed(2)}
+				<!-- Leaderboard -->
+				<Card.Root>
+					<Card.Header class="flex flex-row items-center justify-between pb-2">
+						<div class="flex items-center gap-4">
+							<Card.Title>Leaderboard</Card.Title>
+							<span class="text-sm text-muted-foreground">{leaderboard.length} Players</span>
+						</div>
+						<Button variant="outline" size="sm" onclick={() => showLeaderboardModal = true}>
+							View Full Standings
+						</Button>
+					</Card.Header>
+					<Card.Content>
+						<div class="flex items-center justify-between p-2 mb-2 bg-muted/30 rounded-lg">
+							<div class="flex items-center gap-3">
+								<span class="text-lg font-bold w-6 text-center">🏆</span>
+								<div class="flex flex-col">
+									<span class="font-medium text-muted-foreground">Total Winnings</span>
+								</div>
 							</div>
-							<div class="text-sm text-muted-foreground">Your P&L</div>
-						</Card.Content>
-					</Card.Root>
-					<Card.Root>
-						<Card.Content class="pt-6">
-							<div class="text-2xl font-bold">{leaderboard.length}</div>
-							<div class="text-sm text-muted-foreground">Players</div>
-						</Card.Content>
-					</Card.Root>
-					<Card.Root>
-						<Card.Content class="pt-6">
-							<div class="text-2xl font-bold text-green-500">${game.prizePool.toLocaleString()}</div>
-							<div class="text-sm text-muted-foreground">Prize Pool</div>
-						</Card.Content>
-					</Card.Root>
-				</div>
+							<div class="text-right">
+								<span class="font-mono font-medium {prizePool >= 0 ? 'text-green-500' : 'text-red-500'}">
+									{prizePool >= 0 ? "+" : ""}${prizePool.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+								</span>
+							</div>
+						</div>
+						<div class="space-y-2">
+							{#each displayedLeaderboard as player, i}
+								{#if i === 3}
+									<div class="text-center text-xs text-muted-foreground py-1">...</div>
+								{/if}
+								<div class="flex items-center justify-between p-2 rounded-lg {player.isUser ? 'bg-secondary/50' : ''}">
+									<div class="flex items-center gap-3">
+										<span class="text-lg font-bold w-6 text-center">{getRankEmoji(player.rank)}</span>
+										<div class="flex flex-col">
+											<span class="font-medium {player.isUser ? 'text-primary' : ''}">
+												{player.username}
+												{#if game.creatorWalletAddress && player.walletAddress?.toLowerCase() === game.creatorWalletAddress.toLowerCase()}
+													<span class="text-muted-foreground text-xs ml-1">(Owner)</span>
+												{/if}
+											</span>
+										</div>
+									</div>
+									<div class="text-right">
+										<span class="font-mono font-medium {player.pnl >= 0 ? 'text-green-500' : 'text-red-500'}">
+											{player.pnl >= 0 ? "+" : ""}${player.pnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+										</span>
+									</div>
+								</div>
+							{/each}
+						</div>
+					</Card.Content>
+				</Card.Root>
 
 				<!-- Price Chart from Hyperliquid -->
 				<Card.Root>
@@ -738,14 +885,20 @@
 							<!-- Candle Interval -->
 							<div class="flex gap-1">
 								{#each ["5m", "15m", "1h", "4h"] as interval}
+									{@const isValid = isIntervalValid(interval, chartTimeRange)}
 									<button
 										class="px-3 py-1 text-sm rounded transition-colors {chartInterval === interval
 											? 'bg-primary text-primary-foreground'
-											: 'bg-muted hover:bg-muted/80'}"
+											: isValid 
+												? 'bg-muted hover:bg-muted/80' 
+												: 'bg-muted/30 text-muted-foreground cursor-not-allowed'}"
 										onclick={() => {
+											if (!isValid) return;
 											chartInterval = interval as "5m" | "15m" | "1h" | "4h";
 											if (selectedPair) loadChart(selectedPair, interval);
 										}}
+										disabled={!isValid}
+										title={!isValid ? `Interval too large for ${chartTimeRange}h range` : ""}
 									>
 										{interval}
 									</button>
@@ -766,10 +919,7 @@
 										class="px-2 py-0.5 text-xs rounded transition-colors {chartTimeRange === option.hours
 											? 'bg-blue-500 text-white'
 											: 'bg-muted hover:bg-muted/80'}"
-										onclick={() => {
-											chartTimeRange = option.hours;
-											if (selectedPair) loadChart(selectedPair, chartInterval);
-										}}
+										onclick={() => handleRangeChange(option.hours)}
 									>
 										{option.label}
 									</button>
@@ -787,34 +937,41 @@
 								onmousemove={(e) => {
 									if (!chartCanvas || candles.length === 0) return;
 									const rect = chartCanvas.getBoundingClientRect();
-									const scaleX = chartCanvas.width / rect.width;
-									const scaleY = chartCanvas.height / rect.height;
-									const x = (e.clientX - rect.left) * scaleX;
-									const y = (e.clientY - rect.top) * scaleY;
+									// Use logical coordinates (CSS pixels)
+									const x = e.clientX - rect.left;
+									const y = e.clientY - rect.top;
 									
 									const padding = { top: 20, right: 70, bottom: 30, left: 10 };
-									const chartWidth = chartCanvas.width - padding.left - padding.right;
-									const chartHeight = chartCanvas.height - padding.top - padding.bottom;
+									const chartWidth = rect.width - padding.left - padding.right;
+									const chartHeight = rect.height - padding.top - padding.bottom;
 									
 									// Check if within chart area
-									if (x >= padding.left && x <= chartCanvas.width - padding.right &&
-									    y >= padding.top && y <= chartCanvas.height - padding.bottom) {
-										
-										// Calculate price at cursor
-										const prices = candles.flatMap((c) => [parseFloat(c.h), parseFloat(c.l)]);
-										const minPrice = Math.min(...prices);
-										const maxPrice = Math.max(...prices);
-										const priceRange = maxPrice - minPrice || 1;
-										const priceAtY = maxPrice - ((y - padding.top) / chartHeight) * priceRange;
+									if (x >= padding.left && x <= rect.width - padding.right &&
+									    y >= padding.top && y <= rect.height - padding.bottom) {
 										
 										// Calculate candle/time at cursor
 										const candleIndex = Math.floor(((x - padding.left) / chartWidth) * candles.length);
 										const clampedIndex = Math.max(0, Math.min(candleIndex, candles.length - 1));
-										const candleTime = new Date(candles[clampedIndex].t);
+										const candle = candles[clampedIndex];
+										const candleTime = new Date(candle.t);
 										
-										crosshairX = (x / chartCanvas.width) * 100;
-										crosshairY = (y / chartCanvas.height) * 100;
-										crosshairPrice = priceAtY;
+										// Calculate chart scale
+										const prices = candles.flatMap((c) => [parseFloat(c.h), parseFloat(c.l)]);
+										const minPrice = Math.min(...prices);
+										const maxPrice = Math.max(...prices);
+										const priceRange = maxPrice - minPrice || 1;
+
+										// Snap Y to Close price
+										const closePrice = parseFloat(candle.c);
+										const snapY = padding.top + ((maxPrice - closePrice) / priceRange) * chartHeight;
+										
+										// Snap to candle center
+										const candleSpacing = chartWidth / candles.length;
+										const snappedX = padding.left + clampedIndex * candleSpacing + candleSpacing / 2;
+
+										crosshairX = (snappedX / rect.width) * 100;
+										crosshairY = (snapY / rect.height) * 100;
+										crosshairPrice = closePrice;
 										crosshairTime = candleTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
 									} else {
 										crosshairX = null;
@@ -926,263 +1083,289 @@
 					</Card.Content>
 				</Card.Root>
 
-				<div class="grid lg:grid-cols-3 gap-8">
-					<!-- Trading Panel -->
-					<div class="lg:col-span-2 space-y-6">
-						<Card.Root>
-							<Card.Header>
-								<Card.Title>Build Your Trade</Card.Title>
-								<Card.Description>
-									Create a pair by selecting Long (bullish) and/or Short (bearish) assets
-								</Card.Description>
-							</Card.Header>
-							<Card.Content class="space-y-4">
-								{#if error}
-									<div class="p-3 bg-red-50 dark:bg-red-950 text-red-500 rounded-md text-sm">
-										{error}
-									</div>
-								{/if}
-
-								<!-- LONG Selection -->
-								<div class="space-y-2 p-3 border border-green-500/30 rounded-lg bg-green-500/5">
-									<Label class="text-green-500 flex items-center gap-1">
-										📈 Long (Bullish)
-										<span class="text-xs text-muted-foreground font-normal">- Assets you expect to go up</span>
-									</Label>
-									
-									<!-- Selected longs -->
-									<div class="flex flex-wrap gap-2 min-h-[36px]">
-										{#if selectedLongs.length === 0}
-											<span class="text-muted-foreground text-sm">Select asset(s) you're bullish on</span>
-										{/if}
-										{#each selectedLongs as coin}
-											<span class="inline-flex items-center gap-1 px-2 py-1 text-sm bg-green-500 text-white rounded-full">
-												{coin}
-												<button
-													type="button"
-													class="hover:bg-white/20 rounded-full p-0.5"
-													onclick={() => removeLong(coin)}
-													aria-label="Remove {coin}"
-												>
-													<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-														<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-													</svg>
-												</button>
-											</span>
-										{/each}
-									</div>
-
-									<!-- Long search -->
-									<div class="relative">
-										<Input
-											placeholder={isLoadingCoins ? "Loading..." : "Search (e.g., BTC, ETH...)"}
-											bind:value={longSearchInput}
-											onfocus={() => (showLongDropdown = true)}
-											onblur={() => setTimeout(() => (showLongDropdown = false), 200)}
-											disabled={isLoadingCoins}
-											class="border-green-500/30"
-										/>
-										{#if showLongDropdown && filteredLongCoins.length > 0}
-											<div class="absolute z-10 w-full mt-1 bg-background border rounded-lg shadow-lg max-h-40 overflow-y-auto">
-												{#each filteredLongCoins as coin}
-													<button
-														type="button"
-														class="w-full px-3 py-2 text-left hover:bg-green-500/10 transition-colors"
-														onmousedown={() => selectLong(coin)}
-													>
-														<span class="font-medium">{coin}</span>
-													</button>
-												{/each}
-											</div>
-										{/if}
-									</div>
-
-									<!-- Quick picks -->
-									<div class="flex flex-wrap gap-1">
-										{#each availableCoins.filter(c => !selectedLongs.includes(c)).slice(0, 10) as coin}
-											<button
-												type="button"
-												class="px-2 py-0.5 text-xs rounded border border-green-500/30 hover:bg-green-500/20 transition-colors"
-												onclick={() => selectLong(coin)}
-											>
-												+ {coin}
-											</button>
-										{/each}
-									</div>
+				<!-- Trading Panel -->
+				<div class="space-y-6">
+					<Card.Root>
+						<Card.Header>
+							<Card.Title>Build Your Trade</Card.Title>
+							<Card.Description>
+								Create a pair by selecting Long (bullish) and/or Short (bearish) assets
+							</Card.Description>
+						</Card.Header>
+						<Card.Content class="space-y-4">
+							{#if error}
+								<div class="p-3 bg-red-50 dark:bg-red-950 text-red-500 rounded-md text-sm">
+									{error}
 								</div>
+							{/if}
 
-								<!-- SHORT Selection -->
-								<div class="space-y-2 p-3 border border-red-500/30 rounded-lg bg-red-500/5">
-									<Label class="text-red-500 flex items-center gap-1">
-										📉 Short (Bearish)
-										<span class="text-xs text-muted-foreground font-normal">- Assets you expect to go down</span>
-									</Label>
-									
-									<!-- Selected shorts -->
-									<div class="flex flex-wrap gap-2 min-h-[36px]">
-										{#if selectedShorts.length === 0}
-											<span class="text-muted-foreground text-sm">Select asset(s) you're bearish on</span>
-										{/if}
-										{#each selectedShorts as coin}
-											<span class="inline-flex items-center gap-1 px-2 py-1 text-sm bg-red-500 text-white rounded-full">
-												{coin}
-												<button
-													type="button"
-													class="hover:bg-white/20 rounded-full p-0.5"
-													onclick={() => removeShort(coin)}
-													aria-label="Remove {coin}"
-												>
-													<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-														<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-													</svg>
-												</button>
-											</span>
-										{/each}
-									</div>
-
-									<!-- Short search -->
-									<div class="relative">
-										<Input
-											placeholder={isLoadingCoins ? "Loading..." : "Search (e.g., SOL, DOGE...)"}
-											bind:value={shortSearchInput}
-											onfocus={() => (showShortDropdown = true)}
-											onblur={() => setTimeout(() => (showShortDropdown = false), 200)}
-											disabled={isLoadingCoins}
-											class="border-red-500/30"
-										/>
-										{#if showShortDropdown && filteredShortCoins.length > 0}
-											<div class="absolute z-10 w-full mt-1 bg-background border rounded-lg shadow-lg max-h-40 overflow-y-auto">
-												{#each filteredShortCoins as coin}
-													<button
-														type="button"
-														class="w-full px-3 py-2 text-left hover:bg-red-500/10 transition-colors"
-														onmousedown={() => selectShort(coin)}
-													>
-														<span class="font-medium">{coin}</span>
-													</button>
-												{/each}
-											</div>
-										{/if}
-									</div>
-
-									<!-- Quick picks -->
-									<div class="flex flex-wrap gap-1">
-										{#each availableCoins.filter(c => !selectedShorts.includes(c) && !selectedLongs.includes(c)).slice(0, 10) as coin}
-											<button
-												type="button"
-												class="px-2 py-0.5 text-xs rounded border border-red-500/30 hover:bg-red-500/20 transition-colors"
-												onclick={() => selectShort(coin)}
-											>
-												+ {coin}
-											</button>
-										{/each}
-									</div>
-								</div>
-
-								<!-- Pair Preview -->
-								{#if selectedLongs.length > 0 || selectedShorts.length > 0}
-									<div class="p-3 bg-muted/50 rounded-lg">
-										<p class="text-sm font-medium">Your Pair:</p>
-										<p class="text-lg font-bold mt-1">{formatPairDisplay(pairKey())}</p>
-										<p class="text-xs text-muted-foreground mt-1">
-											{#if selectedLongs.length > 0 && selectedShorts.length > 0}
-												Chart shows ratio: {selectedLongs.join("+")} / {selectedShorts.join("+")}
-											{:else if selectedLongs.length > 0}
-												Chart shows {selectedLongs.join("+")} price
-											{:else}
-												Chart shows {selectedShorts.join("+")} price (inverted for short)
-											{/if}
-										</p>
-									</div>
-								{/if}
-
-								<!-- Trade Size -->
-								<div class="space-y-2">
-									<Label for="size">Position Size ($)</Label>
-									<Input
-										id="size"
-										type="number"
-										min="100"
-										max={game.startingCapital}
-										bind:value={tradeSize}
-									/>
-									<div class="flex gap-2">
-										{#each [0.25, 0.5, 0.75, 1] as pct}
-											<button
-												class="flex-1 px-2 py-1 text-sm rounded border hover:bg-muted"
-												onclick={() => (tradeSize = Math.floor(game.startingCapital * pct))}
-											>
-												{pct * 100}%
-											</button>
-										{/each}
-									</div>
-								</div>
-
-								<Button
-									class="w-full"
-									size="lg"
-									onclick={executeTrade}
-									disabled={isExecutingTrade || (selectedLongs.length === 0 && selectedShorts.length === 0) || game.status !== 'active' || !!chartError}
-								>
-									{#if chartError}
-										Trading Paused - API Error
-									{:else if game.status !== 'active'}
-										Game Not Active
-									{:else if selectedLongs.length === 0 && selectedShorts.length === 0}
-										Select Long or Short Assets
-									{:else if isExecutingTrade}
-										Executing Trade...
-									{:else}
-										Execute Trade: {formatPairDisplay(pairKey())}
+							<!-- LONG Selection -->
+							<div class="space-y-2 p-3 border border-green-500/30 rounded-lg bg-green-500/5">
+								<Label class="text-green-500 flex items-center gap-1">
+									📈 Long (Bullish)
+									<span class="text-xs text-muted-foreground font-normal">- Assets you expect to go up</span>
+								</Label>
+								
+								<!-- Selected longs -->
+								<div class="flex flex-wrap gap-2 min-h-[36px]">
+									{#if selectedLongs.length === 0}
+										<span class="text-muted-foreground text-sm">Select asset(s) you're bullish on</span>
 									{/if}
-								</Button>
-							</Card.Content>
-						</Card.Root>
-					</div>
-
-					<!-- Leaderboard -->
-					<div>
-						<Card.Root>
-							<Card.Header>
-								<Card.Title>Leaderboard</Card.Title>
-								<Card.Description>Real-time standings</Card.Description>
-							</Card.Header>
-							<Card.Content class="p-0">
-								<div class="divide-y">
-									{#each leaderboard as player, index}
-										<div
-											class="flex items-center justify-between p-4 {player.walletAddress?.toLowerCase() ===
-											walletAddress?.toLowerCase()
-												? 'bg-primary/5'
-												: ''}"
-										>
-											<div class="flex items-center gap-3">
-												<span class="text-xl w-8">{getRankEmoji(index + 1)}</span>
-												<div>
-													<div class="font-medium">{player.username}</div>
-													<div class="text-xs text-muted-foreground">
-														{player.totalTrades} trades
-													</div>
-												</div>
-											</div>
-											<span
-												class="font-medium tabular-nums {player.pnl >= 0
-													? 'text-green-500'
-													: 'text-red-500'}"
+									{#each selectedLongs as coin}
+										<span class="inline-flex items-center gap-1 px-2 py-1 text-sm bg-green-500 text-white rounded-full">
+											{coin}
+											<button
+												type="button"
+												class="hover:bg-white/20 rounded-full p-0.5"
+												onclick={() => removeLong(coin)}
+												aria-label="Remove {coin}"
 											>
-												{player.pnl >= 0 ? '+' : ''}${player.pnl.toFixed(2)}
-											</span>
-										</div>
-									{:else}
-										<div class="p-4 text-center text-muted-foreground">
-											No participants yet
-										</div>
+												<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+													<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+												</svg>
+											</button>
+										</span>
 									{/each}
 								</div>
-							</Card.Content>
-						</Card.Root>
-					</div>
+
+								<!-- Long search -->
+								<div class="relative">
+									<Input
+										placeholder={isLoadingCoins ? "Loading..." : "Search (e.g., BTC, ETH...)"}
+										bind:value={longSearchInput}
+										onfocus={() => (showLongDropdown = true)}
+										onblur={() => setTimeout(() => (showLongDropdown = false), 200)}
+										disabled={isLoadingCoins}
+										class="border-green-500/30"
+									/>
+									{#if showLongDropdown && filteredLongCoins.length > 0}
+										<div class="absolute z-10 w-full mt-1 bg-background border rounded-lg shadow-lg max-h-40 overflow-y-auto">
+											{#each filteredLongCoins as coin}
+												<button
+													type="button"
+													class="w-full px-3 py-2 text-left hover:bg-green-500/10 transition-colors"
+													onmousedown={() => selectLong(coin)}
+												>
+													<span class="font-medium">{coin}</span>
+												</button>
+											{/each}
+										</div>
+									{/if}
+								</div>
+
+								<!-- Quick picks -->
+								<div class="flex flex-wrap gap-1">
+									{#each availableCoins.filter(c => !selectedLongs.includes(c)).slice(0, 10) as coin}
+										<button
+											type="button"
+											class="px-2 py-0.5 text-xs rounded border border-green-500/30 hover:bg-green-500/20 transition-colors"
+											onclick={() => selectLong(coin)}
+										>
+											+ {coin}
+										</button>
+									{/each}
+								</div>
+							</div>
+
+							<!-- SHORT Selection -->
+							<div class="space-y-2 p-3 border border-red-500/30 rounded-lg bg-red-500/5">
+								<Label class="text-red-500 flex items-center gap-1">
+									📉 Short (Bearish)
+									<span class="text-xs text-muted-foreground font-normal">- Assets you expect to go down</span>
+								</Label>
+								
+								<!-- Selected shorts -->
+								<div class="flex flex-wrap gap-2 min-h-[36px]">
+									{#if selectedShorts.length === 0}
+										<span class="text-muted-foreground text-sm">Select asset(s) you're bearish on</span>
+									{/if}
+									{#each selectedShorts as coin}
+										<span class="inline-flex items-center gap-1 px-2 py-1 text-sm bg-red-500 text-white rounded-full">
+											{coin}
+											<button
+												type="button"
+												class="hover:bg-white/20 rounded-full p-0.5"
+												onclick={() => removeShort(coin)}
+												aria-label="Remove {coin}"
+											>
+												<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+													<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+												</svg>
+											</button>
+										</span>
+									{/each}
+								</div>
+
+								<!-- Short search -->
+								<div class="relative">
+									<Input
+										placeholder={isLoadingCoins ? "Loading..." : "Search (e.g., SOL, DOGE...)"}
+										bind:value={shortSearchInput}
+										onfocus={() => (showShortDropdown = true)}
+										onblur={() => setTimeout(() => (showShortDropdown = false), 200)}
+										disabled={isLoadingCoins}
+										class="border-red-500/30"
+									/>
+									{#if showShortDropdown && filteredShortCoins.length > 0}
+										<div class="absolute z-10 w-full mt-1 bg-background border rounded-lg shadow-lg max-h-40 overflow-y-auto">
+											{#each filteredShortCoins as coin}
+												<button
+													type="button"
+													class="w-full px-3 py-2 text-left hover:bg-red-500/10 transition-colors"
+													onmousedown={() => selectShort(coin)}
+												>
+													<span class="font-medium">{coin}</span>
+												</button>
+											{/each}
+										</div>
+									{/if}
+								</div>
+
+								<!-- Quick picks -->
+								<div class="flex flex-wrap gap-1">
+									{#each availableCoins.filter(c => !selectedShorts.includes(c) && !selectedLongs.includes(c)).slice(0, 10) as coin}
+										<button
+											type="button"
+											class="px-2 py-0.5 text-xs rounded border border-red-500/30 hover:bg-red-500/20 transition-colors"
+											onclick={() => selectShort(coin)}
+										>
+											+ {coin}
+										</button>
+									{/each}
+								</div>
+							</div>
+
+							<!-- Pair Preview -->
+							{#if selectedLongs.length > 0 || selectedShorts.length > 0}
+								<div class="p-3 bg-muted/50 rounded-lg">
+									<p class="text-sm font-medium">Your Pair:</p>
+									<p class="text-lg font-bold mt-1">{formatPairDisplay(pairKey())}</p>
+									<p class="text-xs text-muted-foreground mt-1">
+										{#if selectedLongs.length > 0 && selectedShorts.length > 0}
+											Chart shows ratio: {selectedLongs.join("+")} / {selectedShorts.join("+")}
+										{:else if selectedLongs.length > 0}
+											Chart shows {selectedLongs.join("+")} price
+										{:else}
+											Chart shows {selectedShorts.join("+")} price (inverted for short)
+										{/if}
+									</p>
+								</div>
+							{/if}
+
+							<!-- Trade Size -->
+							<div class="space-y-2">
+								<div class="flex justify-between items-center">
+									<Label for="size">Position Size ($)</Label>
+									<span class="text-xs text-muted-foreground">
+										Available: ${currentBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+									</span>
+								</div>
+								<Input
+									id="size"
+									type="number"
+									min="100"
+									max={currentBalance}
+									bind:value={tradeSize}
+								/>
+								<div class="flex gap-2">
+									{#each [0.25, 0.5, 0.75, 1] as pct}
+										<button
+											class="flex-1 px-2 py-1 text-sm rounded border hover:bg-muted"
+											onclick={() => (tradeSize = Math.floor(currentBalance * pct))}
+										>
+											{pct * 100}%
+										</button>
+									{/each}
+								</div>
+							</div>
+
+							<Button
+								class="w-full"
+								size="lg"
+								onclick={executeTrade}
+								disabled={isExecutingTrade || (selectedLongs.length === 0 && selectedShorts.length === 0) || game.status !== 'active' || !!chartError || tradeSize > currentBalance}
+							>
+								{#if chartError}
+									Trading Paused - API Error
+								{:else if game.status !== 'active'}
+									Game Not Active
+								{:else if selectedLongs.length === 0 && selectedShorts.length === 0}
+									Select Long or Short Assets
+								{:else if tradeSize > currentBalance}
+									Insufficient Balance
+								{:else if isExecutingTrade}
+									Executing Trade...
+								{:else}
+									Execute Trade: {formatPairDisplay(pairKey())}
+								{/if}
+							</Button>
+						</Card.Content>
+					</Card.Root>
 				</div>
+
+				<!-- Leaderboard Modal -->
+				{#if showLeaderboardModal}
+					<div 
+						class="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm"
+						role="button"
+						tabindex="0"
+						onclick={() => showLeaderboardModal = false}
+						onkeydown={(e) => e.key === 'Escape' && (showLeaderboardModal = false)}
+						aria-label="Close modal"
+					></div>
+					<div class="fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 sm:rounded-lg">
+						<div class="flex flex-col space-y-1.5 text-center sm:text-left">
+							<h2 class="text-lg font-semibold leading-none tracking-tight">Full Leaderboard</h2>
+							<p class="text-sm text-muted-foreground">
+								Current standings for {game.name}
+							</p>
+						</div>
+
+						<div class="flex items-center justify-between p-2 mb-2 bg-muted/30 rounded-lg">
+							<div class="flex items-center gap-3">
+								<span class="text-lg font-bold w-6 text-center">🏆</span>
+								<div class="flex flex-col">
+									<span class="font-medium text-muted-foreground">Total Winnings</span>
+								</div>
+							</div>
+							<div class="text-right">
+								<span class="font-mono font-medium {prizePool >= 0 ? 'text-green-500' : 'text-red-500'}">
+									{prizePool >= 0 ? "+" : ""}${prizePool.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+								</span>
+							</div>
+						</div>
+						
+						<div class="max-h-[60vh] overflow-y-auto pr-2">
+							<div class="space-y-2">
+								{#each leaderboard.slice().sort((a, b) => b.pnl - a.pnl) as player, i}
+									<div class="flex items-center justify-between p-3 rounded-lg border {player.walletAddress?.toLowerCase() === walletAddress?.toLowerCase() ? 'bg-secondary/50 border-primary/20' : 'bg-card'}">
+										<div class="flex items-center gap-3">
+											<span class="text-lg font-bold w-8 text-center tabular-nums">{getRankEmoji(i + 1)}</span>
+											<div class="flex flex-col">
+												<span class="font-medium {player.walletAddress?.toLowerCase() === walletAddress?.toLowerCase() ? 'text-primary' : ''}">
+													{player.username}
+													{#if game.creatorWalletAddress && player.walletAddress?.toLowerCase() === game.creatorWalletAddress.toLowerCase()}
+														<span class="text-muted-foreground text-xs ml-1">(Owner)</span>
+													{/if}
+												</span>
+												<span class="text-xs text-muted-foreground">{player.totalTrades} trades</span>
+											</div>
+										</div>
+										<div class="text-right">
+											<div class="font-mono font-medium {player.pnl >= 0 ? 'text-green-500' : 'text-red-500'}">
+												{player.pnl >= 0 ? "+" : ""}${player.pnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+											</div>
+										</div>
+									</div>
+								{/each}
+							</div>
+						</div>
+
+						<div class="flex justify-end">
+							<Button onclick={() => showLeaderboardModal = false}>Close</Button>
+						</div>
+					</div>
+				{/if}
 			</div>
 		{/if}
 	</main>

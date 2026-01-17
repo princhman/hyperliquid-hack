@@ -1,14 +1,14 @@
 <script lang="ts">
 	import { Button } from "$lib/components/ui/button";
-	import pearPoolLogo from "$lib/assets/logo-no-bg.jpg";
+	import pearPoolLogo from "$lib/assets/logo-bg-removebg-preview.png";
 </script>
 
 <div class="min-h-screen bg-background flex flex-col">
 	<header class="border-b">
-		<div class="container mx-auto px-4 py-4 flex items-center justify-between">
+		<div class="container mx-auto px-4 py-4 flex items-center justify-start gap-8">
 			<div class="flex items-center">
-				<img src={pearPoolLogo} alt="Pear Pool Logo" class="h-12 w-12 mr-3 object-contain" />
-				<h1 class="text-2xl font-bold leading-none">
+				<img src={pearPoolLogo} alt="Pear Pool Logo" class="h-12 w-12 mr-1 object-contain" />
+				<h1 class="text-xl font-light font-serif leading-none">
 					<a href="/">Pear Pool</a>
 				</h1>
 			</div>

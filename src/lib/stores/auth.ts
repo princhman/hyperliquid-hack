@@ -20,6 +20,7 @@ interface AuthState {
   error: string | null;
   agentWalletStatus: "ACTIVE" | "EXPIRED" | "NOT_FOUND" | null;
   agentWalletAddress: string | null;
+  username: string | null;
 }
 
 const initialState: AuthState = {
@@ -30,6 +31,7 @@ const initialState: AuthState = {
   error: null,
   agentWalletStatus: null,
   agentWalletAddress: null,
+  username: null,
 };
 
 function createAuthStore() {
@@ -287,6 +289,13 @@ function createAuthStore() {
       update((state) => ({
         ...state,
         agentWalletStatus: status,
+      }));
+    },
+
+    updateUsername(username: string) {
+      update((state) => ({
+        ...state,
+        username,
       }));
     },
 

@@ -30,7 +30,7 @@ export const getOrCreateUser = mutation({
 
     // Create session
     const token = generateToken();
-    await ctx.db.insert("sessions", {
+    await ctx.db.insert("auth_sessions", {
       userId: user!._id,
       token,
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
@@ -124,7 +124,7 @@ export const updateUsername = mutation({
 
     // Check session
     const session = await ctx.db
-      .query("sessions")
+      .query("auth_sessions")
       .withIndex("by_token", (q) => q.eq("token", args.token))
       .first();
 
@@ -158,7 +158,7 @@ export const getMe = query({
   },
   handler: async (ctx, args) => {
     const session = await ctx.db
-      .query("sessions")
+      .query("auth_sessions")
       .withIndex("by_token", (q) => q.eq("token", args.token))
       .first();
 
@@ -261,7 +261,7 @@ export const logout = mutation({
   },
   handler: async (ctx, args) => {
     const session = await ctx.db
-      .query("sessions")
+      .query("auth_sessions")
       .withIndex("by_token", (q) => q.eq("token", args.token))
       .first();
 

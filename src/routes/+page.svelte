@@ -1,8 +1,10 @@
 <script lang="ts">
     import { Button } from "$lib/components/ui/button";
     import * as Card from "$lib/components/ui/card";
+    import { Input } from "$lib/components/ui/input";
+    import { Label } from "$lib/components/ui/label";
     import { goto } from "$app/navigation";
-    import pearPoolLogo from "$lib/assets/logo-no-bg.jpg";
+    import pearPoolLogo from "$lib/assets/logo-bg-removebg-preview.png";
     import {
         auth,
         isConnected,
@@ -15,15 +17,18 @@
     let isLoading = $state(false);
     let errorMessage = $state<string | null>(null);
     let currentStep = $state<
-        "connect" | "authenticate" | "agent-wallet" | "ready"
+        "connect" | "authenticate" | "agent-wallet" | "set-username" | "ready"
     >("connect");
     let agentWalletAddress = $state<string | null>(null);
     let accessToken = $state<string | null>(null);
+    let username = $state<string | null>(null);
+    let newUsername = $state("");
 
     // Subscribe to auth store for state updates
-    auth.subscribe((state: { error: string | null; agentWalletAddress: string | null; isConnected: boolean; isAuthenticated: boolean; agentWalletStatus: string | null }) => {
+    auth.subscribe((state: { error: string | null; agentWalletAddress: string | null; isConnected: boolean; isAuthenticated: boolean; agentWalletStatus: string | null; username: string | null }) => {
         errorMessage = state.error;
         agentWalletAddress = state.agentWalletAddress;
+        username = state.username;
 
         // Determine current step based on state
         if (!state.isConnected) {
@@ -32,6 +37,8 @@
             currentStep = "authenticate";
         } else if (state.agentWalletStatus !== "ACTIVE") {
             currentStep = "agent-wallet";
+        } else if (!state.username) {
+            currentStep = "set-username";
         } else {
             currentStep = "ready";
         }
@@ -63,9 +70,13 @@
             localStorage.setItem("walletAddress", address);
 
             // Create user if doesn't exist
-            await convex.mutation(api.auth.getOrCreateUser, {
+            const authResult = await convex.mutation(api.auth.getOrCreateUser, {
                 walletAddress: address,
             });
+            
+            if (authResult.user.username) {
+                auth.updateUsername(authResult.user.username);
+            }
 
             // Authenticate with Pear Protocol
             const tokens = await auth.authenticateWithPear(async (tokens: { accessToken: string; refreshToken: string; expiresIn: number }) => {
@@ -161,31 +172,45 @@
     function goToLobby() {
         goto("/lobby");
     }
+
+    async function handleSetUsername() {
+        if (!newUsername.trim()) return;
+        isLoading = true;
+        errorMessage = null;
+
+        try {
+            const result = await convex.mutation(api.auth.updateUsernameByWallet, {
+                walletAddress: $walletAddress!,
+                username: newUsername.trim(),
+            });
+            
+            auth.updateUsername(result.username);
+        } catch (err) {
+            errorMessage = err instanceof Error ? err.message : "Failed to set username";
+        } finally {
+            isLoading = false;
+        }
+    }
 </script>
 
 <div class="min-h-screen bg-background flex flex-col">
-    <header class="border-b">
+    <header class="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div
-            class="container mx-auto px-4 py-4 flex items-center justify-between"
+            class="container mx-auto px-4 py-4 flex items-center justify-start gap-8"
         >
             <div class="flex items-center">
-                <img src={pearPoolLogo} alt="Pear Pool Logo" class="h-12 w-12 mr-3 object-contain" />
-                <h1 class="text-2xl font-bold leading-none">
+                <img src={pearPoolLogo} alt="Pear Pool Logo" class="h-12 w-12 mr-1 object-contain" />
+                <h1 class="text-xl font-light font-serif leading-none">
                     <a href="/">Pear Pool</a>
                 </h1>
             </div>
-            <nav class="flex gap-4">
-                <Button variant="ghost" href="/how-it-works"
-                    >How it Works</Button
-                >
-            </nav>
         </div>
     </header>
 
     <main
-        class="flex-1 container mx-auto px-4 py-12 flex flex-col lg:flex-row items-center gap-12"
+        class="flex-1 container mx-auto px-4 py-12 flex flex-col items-center justify-center gap-12"
     >
-        <div class="flex-1 space-y-6">
+        <div class="flex-1 space-y-6 text-center flex flex-col items-center">
             <h2 class="text-4xl lg:text-5xl font-bold tracking-tight">
                 Compete. Trade. Win.
             </h2>
@@ -194,11 +219,6 @@
                 real markets via Hyperliquid, and climb the leaderboard to win
                 the prize pool.
             </p>
-            <div class="flex justify-start">
-                <Button size="lg" variant="outline" href="/learn-more"
-                    >Learn More</Button
-                >
-            </div>
         </div>
 
         <Card.Root class="w-full max-w-sm">
@@ -323,6 +343,61 @@
                         Disconnect Wallet
                     </Button>
                 </Card.Content>
+            {:else if currentStep === "set-username"}
+                <!-- Set Username -->
+                <Card.Header>
+                    <Card.Title>Choose Username</Card.Title>
+                    <Card.Description>
+                        Set a unique username for the leaderboard
+                    </Card.Description>
+                </Card.Header>
+                <Card.Content class="space-y-4">
+                    <form 
+                        class="space-y-4"
+                        onsubmit={(e) => {
+                            e.preventDefault();
+                            handleSetUsername();
+                        }}
+                    >
+                        <div class="space-y-2">
+                            <Label for="username">Username</Label>
+                            <Input
+                                id="username"
+                                placeholder="e.g. Trader001"
+                                bind:value={newUsername}
+                                minlength="3"
+                                maxlength="20"
+                                required
+                            />
+                            <p class="text-xs text-muted-foreground">
+                                3-20 characters, letters, numbers, and underscores only.
+                            </p>
+                        </div>
+
+                        {#if errorMessage}
+                            <div
+                                class="p-3 text-sm text-red-500 bg-red-50 dark:bg-red-950 rounded-md"
+                            >
+                                {errorMessage}
+                            </div>
+                        {/if}
+
+                        <Button
+                            type="submit"
+                            class="w-full"
+                            disabled={isLoading || !newUsername.trim()}
+                        >
+                            {isLoading ? "Saving..." : "Set Username"}
+                        </Button>
+                    </form>
+                    <Button
+                        variant="ghost"
+                        class="w-full"
+                        onclick={handleDisconnect}
+                    >
+                        Disconnect Wallet
+                    </Button>
+                </Card.Content>
             {:else}
                 <!-- Not connected -->
                 <Card.Header>
@@ -349,25 +424,8 @@
                     </Button>
                 </Card.Content>
             {/if}
-
-            <!-- Progress indicator -->
-            <Card.Footer class="flex justify-center gap-2">
-                {#each ["connect", "authenticate", "agent-wallet", "ready"] as step, i}
-                    <div
-                        class="w-2 h-2 rounded-full {currentStep === step
-                            ? 'bg-primary'
-                            : [
-                                    'connect',
-                                    'authenticate',
-                                    'agent-wallet',
-                                    'ready',
-                                ].indexOf(currentStep) > i
-                              ? 'bg-primary/60'
-                              : 'bg-muted'}"
-                    ></div>
-                {/each}
-            </Card.Footer>
         </Card.Root>
+
     </main>
 
     <footer class="border-t py-6">
