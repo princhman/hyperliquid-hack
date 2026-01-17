@@ -6,56 +6,48 @@ export default defineSchema({
     walletAddress: v.string(),
     username: v.optional(v.string()),
     createdAt: v.number(),
-
-    // Pear Protocol auth tokens
-    pearAccessToken: v.optional(v.string()),
-    pearRefreshToken: v.optional(v.string()),
-    pearTokenExpiresAt: v.optional(v.number()),
-
-    // Agent wallet info (managed by Pear, we just store the address/status)
-    agentWalletAddress: v.optional(v.string()),
-    agentWalletStatus: v.optional(
-      v.union(
-        v.literal("ACTIVE"),
-        v.literal("EXPIRED"),
-        v.literal("NOT_FOUND"),
-      ),
-    ),
   }).index("by_wallet", ["walletAddress"]),
 
-  sessions: defineTable({
+  lobby: defineTable({
     name: v.string(),
     status: v.union(
-      v.literal("pending"),
-      v.literal("active"),
-      v.literal("completed"),
+      v.literal("not started"),
+      v.literal("started"),
+      v.literal("finished"),
     ),
+
+    createdBy: v.id("users"),
+    createdAt: v.number(),
+
+    //config
     startTime: v.number(),
     endTime: v.number(),
-    maxPlayers: v.number(),
-    baseCapital: v.number(),
-    createdBy: v.id("users"),
-    rules: v.object({
-      allowedPairs: v.array(v.string()),
-      maxLeverage: v.number(),
-    }),
-    createdAt: v.number(),
+    buyIn: v.number(),
+    // split should be defined later
   }).index("by_status", ["status"]),
 
-  playerSessions: defineTable({
+  userToLobby: defineTable({
     userId: v.id("users"),
-    sessionId: v.id("sessions"),
+    lobbyId: v.id("lobby"),
     walletAddress: v.string(),
-    currentPnL: v.number(),
-    finalPnL: v.optional(v.number()),
-    rank: v.optional(v.number()),
-    status: v.union(
-      v.literal("active"),
-      v.literal("disqualified"),
-      v.literal("completed"),
-    ),
-    joinedAt: v.number(),
-  })
-    .index("by_session", ["sessionId"])
-    .index("by_user", ["userId"]),
+    balance: v.float64(),
+    valueInPositions: v.float64(),
+    transactionId: v.optional(v.string()),
+  }),
+
+  balanceHistory: defineTable({
+    userId: v.id("users"),
+    lobbyId: v.id("lobby"),
+    valueInPositions: v.float64(),
+    balance: v.float64(),
+    timestamp: v.number(),
+  }),
+
+  userToPositions: defineTable({
+    userId: v.id("users"),
+    lobbyId: v.id("lobby"),
+    positionId: v.string(),
+    state: v.union(v.literal("open"), v.literal("closed")),
+    createdAt: v.number(),
+  }),
 });
