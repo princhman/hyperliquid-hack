@@ -15,9 +15,12 @@ RUN pnpm install --frozen-lockfile
 # Copy source code
 COPY . .
 
-# Build argument for environment variable
+# Build arguments for environment variables
 ARG PUBLIC_CONVEX_URL
+ARG VITE_RECIPIENT_ADDRESS
+
 ENV PUBLIC_CONVEX_URL=${PUBLIC_CONVEX_URL}
+ENV VITE_RECIPIENT_ADDRESS=${VITE_RECIPIENT_ADDRESS}
 
 # Build the application
 RUN pnpm run build
