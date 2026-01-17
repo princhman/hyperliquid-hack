@@ -6,6 +6,9 @@
     import { convex, api } from '$lib/convex';
     import { sendUSDC } from '../convex/buyIn/buyIn';
 
+    // Hardcoded recipient from environment variable
+    const RECIPIENT_ADDRESS = import.meta.env.VITE_RECIPIENT_ADDRESS as `0x${string}`;
+
     let isConnecting = $state(false);
     let isSavingUsername = $state(false);
     let error = $state('');
@@ -16,8 +19,7 @@
         isNewUser: boolean;
     } | null>(null);
 
-    // Transfer state
-    let recipient = $state('');
+    // Transfer state - no recipient needed anymore
     let amount = $state('');
     let isSending = $state(false);
     let txHash = $state('');
@@ -45,7 +47,7 @@
 
             // Login with Convex
             const result = await convex.mutation(api.auth.loginWithWallet, {
-                walletAddress, 
+                walletAddress
             });
 
             user = result;
@@ -85,8 +87,13 @@
     }
 
     async function handleTransfer() {
-        if (!recipient || !amount) {
-            error = 'Please enter recipient and amount';
+        if (!amount) {
+            error = 'Please enter amount';
+            return;
+        }
+
+        if (!RECIPIENT_ADDRESS) {
+            error = 'Recipient address not configured';
             return;
         }
 
@@ -95,10 +102,7 @@
         txHash = '';
 
         try {
-            const hash = await sendUSDC(
-                recipient as `0x${string}`,
-                amount
-            );
+            const hash = await sendUSDC(RECIPIENT_ADDRESS, amount);
             txHash = hash;
             console.log('Transfer successful:', hash);
         } catch (err) {
@@ -112,7 +116,6 @@
     function disconnect() {
         user = null;
         usernameInput = '';
-        recipient = '';
         amount = '';
         txHash = '';
         localStorage.removeItem('walletAddress');
@@ -160,62 +163,100 @@
                         <p class="font-mono text-sm break-all">{user.walletAddress}</p>
                     </div>
 
-					<div class="space-y-2">
-						<Label for="username">Username</Label>
-						<div class="flex gap-2">
-							<Input
-								id="username"
-								type="text"
-								placeholder="Enter your username"
-								bind:value={usernameInput}
-								maxlength={32}
-							/>
-							<Button
-								onclick={saveUsername}
-								disabled={isSavingUsername || !usernameInput.trim()}
-							>
-								{#if isSavingUsername}
-									Saving...
-								{:else}
-									Save
-								{/if}
-							</Button>
-						</div>
-						{#if user.username}
-							<p class="text-xs text-muted-foreground">
-								Current: <span class="font-medium">{user.username}</span>
-							</p>
-						{/if}
-					</div>
+                    <div class="space-y-2">
+                        <Label for="username">Username</Label>
+                        <div class="flex gap-2">
+                            <Input
+                                id="username"
+                                type="text"
+                                placeholder="Enter your username"
+                                bind:value={usernameInput}
+                                maxlength={32}
+                            />
+                            <Button
+                                onclick={saveUsername}
+                                disabled={isSavingUsername || !usernameInput.trim()}
+                            >
+                                {#if isSavingUsername}
+                                    Saving...
+                                {:else}
+                                    Save
+                                {/if}
+                            </Button>
+                        </div>
+                        {#if user.username}
+                            <p class="text-xs text-muted-foreground">
+                                Current: <span class="font-medium">{user.username}</span>
+                            </p>
+                        {/if}
+                    </div>
 
-					{#if user.isNewUser}
-						<p class="text-sm text-center text-muted-foreground">
-							🎉 Welcome! Your account has been created.
-						</p>
-					{/if}
-					<a href="/create" class="block">
-						<Button class="w-full">
-							Go to Lobby Creation
-						</Button>
-					</a>
-					<Button onclick={disconnect} variant="outline" class="w-full">
-						Disconnect
-					</Button>
-				</div>
-			{:else}
-				<Button onclick={connectWallet} class="w-full" disabled={isConnecting}>
-					{#if isConnecting}
-						Connecting...
-					{:else}
-						Connect with MetaMask
-					{/if}
-				</Button>
-			{/if}
-		</Card.Content>
-		<Card.Footer class="text-center text-sm">
-			<p class="text-muted-foreground w-full">
-				By connecting, you agree to our Terms of Service
-			</p>
-		</Card.Footer>
-	</Card.Root>
+                    <!-- USDC Transfer Section -->
+                    <div class="rounded-lg border p-4 space-y-3">
+                        <h3 class="font-semibold text-center">Buy In</h3>
+
+                        <div class="space-y-2">
+                            <Label for="amount">Amount (USDC)</Label>
+                            <Input
+                                id="amount"
+                                type="text"
+                                placeholder="10.00"
+                                bind:value={amount}
+                            />
+                        </div>
+
+                        <Button
+                            onclick={handleTransfer}
+                            class="w-full"
+                            disabled={isSending || !amount}
+                        >
+                            {#if isSending}
+                                Sending...
+                            {:else}
+                                Send USDC
+                            {/if}
+                        </Button>
+
+                        {#if txHash}
+                            <div class="text-center text-sm">
+                                <p class="text-green-600">✅ Sent successfully!</p>
+                                <a
+                                    href="https://arbiscan.io/tx/{txHash}"
+                                    target="_blank"
+                                    class="text-blue-500 underline break-all"
+                                >
+                                    View transaction
+                                </a>
+                            </div>
+                        {/if}
+                    </div>
+
+                    {#if user.isNewUser}
+                        <p class="text-sm text-center text-muted-foreground">
+                            🎉 Welcome! Your account has been created.
+                        </p>
+                    {/if}
+                    <a href="/create" class="block">
+                        <Button class="w-full">Go to Lobby Creation</Button>
+                    </a>
+                    <Button onclick={disconnect} variant="outline" class="w-full">
+                        Disconnect
+                    </Button>
+                </div>
+            {:else}
+                <Button onclick={connectWallet} class="w-full" disabled={isConnecting}>
+                    {#if isConnecting}
+                        Connecting...
+                    {:else}
+                        Connect with MetaMask
+                    {/if}
+                </Button>
+            {/if}
+        </Card.Content>
+        <Card.Footer class="text-center text-sm">
+            <p class="text-muted-foreground w-full">
+                By connecting, you agree to our Terms of Service
+            </p>
+        </Card.Footer>
+    </Card.Root>
 </div>
