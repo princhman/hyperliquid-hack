@@ -696,8 +696,12 @@
                                 <Input
                                     type="number"
                                     bind:value={buyUsdValue}
-                                    min={1}
+                                    min={0.1}
                                     max={userBalance}
+                                    oninput={(e) => {
+                                        const value = Number((e.target as HTMLInputElement).value);
+                                        if (value < 0) buyUsdValue = 0.01;
+                                    }}
                                 />
                             </div>
                             <div class="space-y-2">
