@@ -1,7 +1,7 @@
 import { createConfig, http } from "@wagmi/core";
 import { mainnet, arbitrum, base } from "@wagmi/core/chains";
 import { injected } from "@wagmi/connectors";
-import { PUBLIC_TREASURY_WALLET } from "$env/static/public";
+import { PUBLIC_RECIPIENT_ADDRESS } from "$env/static/public";
 
 export const config = createConfig({
   chains: [arbitrum, mainnet, base],
@@ -17,4 +17,4 @@ export const config = createConfig({
 export const DEFAULT_CHAIN_ID = arbitrum.id;
 
 // Treasury address to receive buy-ins
-export const TREASURY_ADDRESS = PUBLIC_TREASURY_WALLET as `0x${string}`;
+export const TREASURY_ADDRESS = PUBLIC_RECIPIENT_ADDRESS as unknown as `0x${string}`;

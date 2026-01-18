@@ -17,7 +17,7 @@ export default defineSchema({
     startTime: v.number(),
     endTime: v.number(),
     buyIn: v.number(),
-    // split should be defined later
+    split: v.number(),
 
     // Demo mode - paper trading with simulated money
     isDemo: v.optional(v.boolean()),
